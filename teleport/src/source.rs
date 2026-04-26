@@ -190,8 +190,9 @@ pub fn run(
         };
         let source_us = last_data.elapsed().as_micros() as u64;
 
+        let is_full = buf_offset == u32::MAX;
         match send_one(&mut sender, &compress_buf[..compressed_len], source_us, buf_offset) {
-            Ok(frags) => stats.record(compressed_len, frags, source_us),
+            Ok(_) => stats.record(compressed_len, source_us, 0, is_full),
             Err(e) => eprintln!("send failed: {e}"),
         }
         last_heartbeat = Instant::now();
