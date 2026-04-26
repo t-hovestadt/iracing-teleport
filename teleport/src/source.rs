@@ -157,12 +157,16 @@ pub fn run(
 
         last_data = Instant::now();
 
-        // Decide: session-info frame or partial varBuf frame.
+        // Decide: full-map frame or partial varBuf frame.
         //
-        // Send a session-info frame when sessionInfoUpdate changes (new session,
+        // Send a full-map frame when sessionInfoUpdate changes (new session,
         // new track, car change etc.), when a target has requested a resync, or
-        // when FULL_FRAME_INTERVAL has elapsed as a fallback. For every other
-        // tick send only the active variable buffer — a few KB instead of 1.1 MB.
+        // when FULL_FRAME_INTERVAL has elapsed as a fallback. The full map
+        // ensures SimHub receives the complete shared-memory region — header,
+        // variable headers, session YAML, and varBuf telemetry data — in a
+        // single decompression, so it activates immediately without waiting for
+        // subsequent partial frames to fill in the varBuf area.
+        // For every other tick send only the active variable buffer (~5–15 KB).
         let force_full = last_full_frame.elapsed() >= FULL_FRAME_INTERVAL || pending_resync;
         let (buf_offset, payload_slice) = {
             let data = telemetry.as_slice();
@@ -176,13 +180,13 @@ pub fn run(
                 last_session_update = session_update;
                 last_full_frame = Instant::now();
                 pending_resync = false;
-                (u32::MAX, 0..session_info_end(data))
+                (u32::MAX, 0..data.len())
             } else if let Some((off, len)) = telemetry.active_var_buf() {
                 (off as u32, off..off + len)
             } else {
                 last_full_frame = Instant::now();
                 pending_resync = false;
-                (u32::MAX, 0..session_info_end(data))
+                (u32::MAX, 0..data.len())
             }
         };
 
@@ -233,28 +237,6 @@ enum OpenResult {
     Retry,
     /// Shutdown signal received — caller should exit.
     Shutdown,
-}
-
-/// Byte offset one-past-the-end of the irsdk static prefix (header + variable
-/// headers + session YAML).  Source sends only this prefix on session changes
-/// rather than the full 1.1 MB map; the varBuf area is already kept current by
-/// the per-frame partial updates.
-///
-/// irsdk_header layout (all i32 LE):
-///   offset 16 — sessionInfoLen
-///   offset 20 — sessionInfoOffset
-///
-/// Falls back to the full map length if the header fields look invalid.
-fn session_info_end(data: &[u8]) -> usize {
-    fn read_i32(data: &[u8], offset: usize) -> Option<i32> {
-        data.get(offset..offset + 4)
-            .and_then(|s| s.try_into().ok())
-            .map(i32::from_le_bytes)
-    }
-    let info_offset = read_i32(data, 20).unwrap_or(0) as usize;
-    let info_len   = read_i32(data, 16).unwrap_or(0) as usize;
-    let end = info_offset.saturating_add(info_len);
-    if end > 112 && end <= data.len() { end } else { data.len() }
 }
 
 fn try_open(shutdown: &mpsc::Receiver<()>) -> std::io::Result<OpenResult> {
