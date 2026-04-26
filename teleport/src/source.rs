@@ -12,9 +12,10 @@ use crate::telemetry::{MAX_TELEMETRY_SIZE, Telemetry, TelemetryError, TelemetryP
 const RECONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL_INTERVAL_MS: u32 = 200;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
-// Force a full-map frame at least this often so a restarted target can resync
-// without waiting for a session change.
-const FULL_FRAME_INTERVAL: Duration = Duration::from_secs(30);
+// Fallback interval for sending a session-info frame when the bidirectional
+// resync-request mechanism can't reach the source (e.g. firewall blocking
+// inbound UDP). Normal resync is driven by target requests — see pending_resync.
+const FULL_FRAME_INTERVAL: Duration = Duration::from_secs(300);
 
 pub fn run(
     bind: &str,
@@ -39,6 +40,9 @@ pub fn run(
         .map_err(|e| std::io::Error::other(format!("invalid bind address: {e}")))?;
     sock.bind(&bind_addr.into())?;
     let socket: UdpSocket = sock.into();
+    // Non-blocking so we can poll for inbound resync requests from targets
+    // without a separate thread. UDP sends with a 2 MB send buffer never block.
+    socket.set_nonblocking(true)?;
     let target_addr: SocketAddr = target
         .parse()
         .map_err(|e| std::io::Error::other(format!("invalid target address: {e}")))?;
@@ -87,9 +91,12 @@ pub fn run(
     // Tracks the last-seen sessionInfoUpdate counter. When it changes we send a
     // full-map frame so the target's header + session YAML stay current.
     let mut last_session_update: i32 = -1;
-    // Tracks when we last sent a full-map frame. Used to force periodic full
-    // frames so a restarted target can resync without waiting for a session change.
+    // Tracks when we last sent a session-info frame. Used as a fallback in case
+    // the target's resync request can't reach the source (see pending_resync).
     let mut last_full_frame = Instant::now();
+    // Set to true when a resync request arrives from a target; causes the next
+    // data tick to send a session-info frame immediately.
+    let mut pending_resync = false;
 
     loop {
         if shutdown.try_recv().is_ok() {
@@ -98,6 +105,12 @@ pub fn run(
         }
 
         if !telemetry.wait_for_data(POLL_INTERVAL_MS) {
+            // Check for resync requests from targets even while iRacing is idle.
+            let mut tmp = [0u8; 1];
+            if socket.recv_from(&mut tmp).is_ok() {
+                pending_resync = true;
+            }
+
             // Send a tiny "still here" packet so the target keeps its memory map
             // alive across menus / loading screens.
             if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
@@ -138,14 +151,13 @@ pub fn run(
 
         last_data = Instant::now();
 
-        // Decide: full frame or partial varBuf frame.
+        // Decide: session-info frame or partial varBuf frame.
         //
-        // Send a full frame when sessionInfoUpdate changes (new session, new
-        // track, car change etc.) or when FULL_FRAME_INTERVAL has elapsed
-        // (so a restarted target resyncs within ~30 s without needing a
-        // session change). For every other tick send only the active variable
-        // buffer — a few KB instead of 1.1 MB.
-        let force_full = last_full_frame.elapsed() >= FULL_FRAME_INTERVAL;
+        // Send a session-info frame when sessionInfoUpdate changes (new session,
+        // new track, car change etc.), when a target has requested a resync, or
+        // when FULL_FRAME_INTERVAL has elapsed as a fallback. For every other
+        // tick send only the active variable buffer — a few KB instead of 1.1 MB.
+        let force_full = last_full_frame.elapsed() >= FULL_FRAME_INTERVAL || pending_resync;
         let (buf_offset, payload_slice) = {
             let data = telemetry.as_slice();
             let session_update = data
@@ -157,11 +169,13 @@ pub fn run(
             if session_update != last_session_update || force_full {
                 last_session_update = session_update;
                 last_full_frame = Instant::now();
+                pending_resync = false;
                 (u32::MAX, 0..session_info_end(data))
             } else if let Some((off, len)) = telemetry.active_var_buf() {
                 (off as u32, off..off + len)
             } else {
                 last_full_frame = Instant::now();
+                pending_resync = false;
                 (u32::MAX, 0..session_info_end(data))
             }
         };
@@ -196,6 +210,12 @@ pub fn run(
             Err(e) => eprintln!("send failed: {e}"),
         }
         last_heartbeat = Instant::now();
+
+        // Poll for resync requests from targets (non-blocking).
+        let mut tmp = [0u8; 1];
+        if socket.recv_from(&mut tmp).is_ok() {
+            pending_resync = true;
+        }
 
         stats.maybe_print();
     }
