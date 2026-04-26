@@ -4,6 +4,7 @@ use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use crate::platform::{boost_thread_priority, HighResTimer};
 use crate::protocol::{MAX_DATAGRAM_SIZE, Receiver as ProtoReceiver};
 use crate::stats::Stats;
 use crate::telemetry::{MAX_TELEMETRY_SIZE, Telemetry, TelemetryProvider};
@@ -16,6 +17,9 @@ pub fn run(
     multicast_group: &str,
     shutdown: mpsc::Receiver<()>,
 ) -> std::io::Result<()> {
+    let _timer = HighResTimer::acquire();
+    boost_thread_priority();
+
     // Build the socket manually so we can set the receive buffer before binding.
     // A single frame arrives as a burst of ~23 × 9KB fragments (~207KB). The OS
     // default (64KB on Windows) drops everything beyond the 7th fragment,
@@ -89,6 +93,8 @@ pub fn run(
                     if let Some(start) = seq_start.take() {
                         let transit_us = start.elapsed().as_micros() as u64;
                         stats.record(compressed.len(), proto.last_fragment_count, proto.last_source_us + transit_us);
+                        stats.record_dropped(proto.dropped_sequences);
+                        proto.dropped_sequences = 0;
                     }
 
                     last_update = Instant::now();

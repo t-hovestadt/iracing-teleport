@@ -4,6 +4,7 @@ use std::net::{SocketAddr, UdpSocket};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use crate::platform::{boost_thread_priority, HighResTimer};
 use crate::protocol::Sender;
 use crate::stats::Stats;
 use crate::telemetry::{MAX_TELEMETRY_SIZE, Telemetry, TelemetryError, TelemetryProvider};
@@ -17,6 +18,9 @@ pub fn run(
     unicast: bool,
     shutdown: mpsc::Receiver<()>,
 ) -> std::io::Result<()> {
+    let _timer = HighResTimer::acquire();
+    boost_thread_priority();
+
     // Build the socket manually so we can set the send buffer before binding.
     // A single compressed frame is ~200KB on the wire. The OS default (64KB on
     // Windows) is smaller than one frame, so send_to stalls mid-burst and adds
@@ -37,7 +41,10 @@ pub fn run(
     println!("Waiting for iRacing to start...");
     let mut telemetry = loop {
         match try_open(&shutdown)? {
-            OpenResult::Connected(t) => break t,
+            OpenResult::Connected(t) => {
+                println!("Connected to iRacing telemetry ({} bytes)", t.size());
+                break t;
+            }
             OpenResult::Shutdown => return Ok(()),
             OpenResult::Retry => continue,
         }
@@ -47,6 +54,9 @@ pub fn run(
     let mut stats = Stats::new("source");
     let mut last_data = Instant::now();
     let mut compress_buf = vec![0u8; get_maximum_output_size(MAX_TELEMETRY_SIZE)];
+    // True once at least one telemetry frame has been received in the current connection.
+    // Used to suppress log spam when iRacing is open but between sessions.
+    let mut got_data = false;
 
     loop {
         if shutdown.try_recv().is_ok() {
@@ -55,8 +65,11 @@ pub fn run(
 
         if !telemetry.wait_for_data(POLL_INTERVAL_MS) {
             if last_data.elapsed() >= RECONNECT_TIMEOUT {
-                println!("iRacing stopped responding — waiting to reconnect...");
+                if got_data {
+                    println!("iRacing stopped responding — waiting to reconnect...");
+                }
                 drop(telemetry);
+                got_data = false;
                 telemetry = loop {
                     match try_open(&shutdown)? {
                         OpenResult::Connected(t) => break t,
@@ -65,9 +78,14 @@ pub fn run(
                     }
                 };
                 last_data = Instant::now();
-                println!("Reconnected.");
+                stats = Stats::new("source");
             }
             continue;
+        }
+
+        if !got_data {
+            println!("Session started.");
+            got_data = true;
         }
 
         last_data = Instant::now();
@@ -106,10 +124,7 @@ enum OpenResult {
 
 fn try_open(shutdown: &mpsc::Receiver<()>) -> std::io::Result<OpenResult> {
     match Telemetry::open() {
-        Ok(t) => {
-            println!("Connected to iRacing telemetry ({} bytes)", t.size());
-            return Ok(OpenResult::Connected(t));
-        }
+        Ok(t) => return Ok(OpenResult::Connected(t)),
         Err(TelemetryError::Unavailable) => {}
         Err(TelemetryError::Other(e)) => {
             return Err(std::io::Error::other(e.to_string()));

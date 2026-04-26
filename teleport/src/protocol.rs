@@ -95,6 +95,9 @@ pub struct Receiver {
     payload_size: usize,
     pub last_source_us: u64,
     pub last_fragment_count: u16,
+    /// Number of sequences abandoned mid-reassembly due to a new sequence arriving.
+    /// Each increment means at least one UDP packet was lost.
+    pub dropped_sequences: u64,
 }
 
 impl Receiver {
@@ -108,6 +111,7 @@ impl Receiver {
             payload_size: 0,
             last_source_us: 0,
             last_fragment_count: 0,
+            dropped_sequences: 0,
         }
     }
 
@@ -166,6 +170,9 @@ impl Receiver {
     }
 
     fn reset(&mut self, hdr: &Header) {
+        if self.got_frags > 0 && self.got_frags < self.total_frags {
+            self.dropped_sequences += 1;
+        }
         self.current_seq = Some(hdr.sequence);
         self.total_frags = hdr.fragments;
         self.got_frags = 0;

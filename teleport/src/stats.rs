@@ -9,6 +9,7 @@ pub struct Stats {
     bytes: u64,
     fragments: u64,
     latency_us: u64,
+    dropped: u64,
 }
 
 impl Stats {
@@ -20,6 +21,7 @@ impl Stats {
             bytes: 0,
             fragments: 0,
             latency_us: 0,
+            dropped: 0,
         }
     }
 
@@ -28,6 +30,10 @@ impl Stats {
         self.bytes += bytes as u64;
         self.fragments += fragments as u64;
         self.latency_us += latency_us;
+    }
+
+    pub fn record_dropped(&mut self, count: u64) {
+        self.dropped += count;
     }
 
     pub fn maybe_print(&mut self) {
@@ -42,18 +48,20 @@ impl Stats {
         let avg_lat = self.latency_us as f64 / self.updates.max(1) as f64;
 
         println!(
-            "[{name}] {rate:.1} msg/s  {mbps:.2} Mbps  {frags:.1} frags/msg  {lat:.0} µs avg latency",
+            "[{name}] {rate:.1} msg/s  {mbps:.2} Mbps  {frags:.1} frags/msg  {lat:.0} µs avg latency  {dropped} dropped",
             name = self.name,
             rate = rate,
             mbps = mbps,
             frags = avg_frags,
             lat = avg_lat,
+            dropped = self.dropped,
         );
 
         self.updates = 0;
         self.bytes = 0;
         self.fragments = 0;
         self.latency_us = 0;
+        self.dropped = 0;
         self.window_start = Instant::now();
     }
 }
