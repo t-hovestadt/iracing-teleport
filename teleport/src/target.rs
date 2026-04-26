@@ -10,6 +10,8 @@ use crate::stats::Stats;
 use crate::telemetry::{MAX_TELEMETRY_SIZE, Telemetry, TelemetryProvider};
 
 const STALE_TIMEOUT: Duration = Duration::from_secs(10);
+// How often target retries a resync request to source when has_full_frame is false.
+const RESYNC_REQUEST_INTERVAL: Duration = Duration::from_secs(1);
 
 pub fn run(
     bind: &str,
@@ -64,10 +66,11 @@ pub fn run(
     let mut last_update = Instant::now();
     let mut stats = Stats::new("target");
     let mut seq_start: Option<Instant> = None;
-    // Guard: only write partial frames once we have established a full-map
-    // baseline. If we start up mid-session the source will send a full frame
-    // on the next sessionInfoUpdate tick; until then we discard partial frames.
+    // Guard: only write partial frames once we have received a session-info frame.
     let mut has_full_frame = false;
+    // Source address learned from recv_from; used to send resync requests.
+    let mut source_addr: Option<std::net::SocketAddr> = None;
+    let mut last_resync_request = Instant::now() - RESYNC_REQUEST_INTERVAL;
 
     loop {
         if shutdown.try_recv().is_ok() {
@@ -76,89 +79,104 @@ pub fn run(
         }
 
         match socket.recv_from(&mut recv_buf) {
-            Ok((len, _src)) => {
+            Ok((len, src)) => {
+                source_addr = source_addr.or(Some(src));
                 let res = proto.ingest(&recv_buf[..len]);
 
                 if res.heartbeat {
                     last_update = Instant::now();
-                    continue;
-                }
-
-                if res.new_seq {
-                    seq_start = Some(Instant::now());
-                }
-
-                if let Some(compressed) = res.assembled {
-                    // Lazily create the local telemetry object the first time data arrives.
-                    if telemetry.is_none() {
-                        match Telemetry::create(MAX_TELEMETRY_SIZE) {
-                            Ok(t) => {
-                                println!("Created local telemetry memory map.");
-                                telemetry = Some(t);
-                            }
-                            Err(e) => {
-                                return Err(std::io::Error::other(format!(
-                                    "failed to create telemetry: {e}"
-                                )));
-                            }
-                        }
+                } else {
+                    if res.new_seq {
+                        seq_start = Some(Instant::now());
                     }
 
-                    let t = telemetry.as_mut().unwrap();
-
-                    if res.buf_offset == u32::MAX {
-                        // Full-map frame — decompress the entire payload at offset 0.
-                        if let Err(e) = decompress_into(compressed, t.as_slice_mut()) {
-                            eprintln!("decompression failed (full frame): {e}");
-                            continue;
+                    if let Some(compressed) = res.assembled {
+                        // Lazily create the local telemetry object the first time data arrives.
+                        if telemetry.is_none() {
+                            match Telemetry::create(MAX_TELEMETRY_SIZE) {
+                                Ok(t) => {
+                                    println!("Created local telemetry memory map.");
+                                    telemetry = Some(t);
+                                }
+                                Err(e) => {
+                                    return Err(std::io::Error::other(format!(
+                                        "failed to create telemetry: {e}"
+                                    )));
+                                }
+                            }
                         }
-                        has_full_frame = true;
-                    } else if has_full_frame {
-                        // Partial frame — payload is irsdk_header (112 bytes) || varBuf data.
-                        // Source prepends the header so tickCounts stay current, preventing
-                        // SimHub from reading the wrong varBuf slot after a ring rotation.
-                        const HDR: usize = 112;
-                        let off = res.buf_offset as usize;
-                        let dec_len = match decompress_into(compressed, &mut partial_staging) {
-                            Ok(n) => n,
-                            Err(e) => {
-                                eprintln!("decompression failed (partial frame): {e}");
+
+                        let t = telemetry.as_mut().unwrap();
+                        let mut wrote = false;
+
+                        if res.buf_offset == u32::MAX {
+                            // Session-info frame — decompress at offset 0; varBuf area is
+                            // kept current by the per-frame partial updates and is untouched.
+                            if let Err(e) = decompress_into(compressed, t.as_slice_mut()) {
+                                eprintln!("decompression failed (session-info frame): {e}");
                                 continue;
                             }
-                        };
-                        if dec_len < HDR {
-                            eprintln!("partial frame decompressed to {dec_len} bytes, expected >{HDR}");
-                            continue;
+                            has_full_frame = true;
+                            wrote = true;
+                        } else if has_full_frame {
+                            // Partial frame — payload is irsdk_header (112 bytes) || varBuf data.
+                            // Source prepends the header so tickCounts stay current, preventing
+                            // SimHub from reading the wrong varBuf slot after a ring rotation.
+                            const HDR: usize = 112;
+                            let off = res.buf_offset as usize;
+                            let dec_len = match decompress_into(compressed, &mut partial_staging) {
+                                Ok(n) => n,
+                                Err(e) => {
+                                    eprintln!("decompression failed (partial frame): {e}");
+                                    continue;
+                                }
+                            };
+                            if dec_len < HDR {
+                                eprintln!("partial frame decompressed to {dec_len} bytes, expected >{HDR}");
+                                continue;
+                            }
+                            let var_len = dec_len - HDR;
+                            let map = t.as_slice_mut();
+                            if map.len() < HDR || off + var_len > map.len() {
+                                eprintln!("partial frame out of range (off={off} var_len={var_len}), discarding");
+                                continue;
+                            }
+                            map[..HDR].copy_from_slice(&partial_staging[..HDR]);
+                            map[off..off + var_len].copy_from_slice(&partial_staging[HDR..dec_len]);
+                            wrote = true;
                         }
-                        let var_len = dec_len - HDR;
-                        let map = t.as_slice_mut();
-                        if map.len() < HDR || off + var_len > map.len() {
-                            eprintln!("partial frame out of range (off={off} var_len={var_len}), discarding");
-                            continue;
+                        // else: partial before session-info — fall through to resync request below.
+
+                        if wrote {
+                            if let Err(e) = t.signal_data_ready() {
+                                eprintln!("signal_data_ready failed: {e}");
+                            }
+
+                            // Compute end-to-end latency: source processing + network transit.
+                            if let Some(start) = seq_start.take() {
+                                let transit_us = start.elapsed().as_micros() as u64;
+                                let is_full = res.buf_offset == u32::MAX;
+                                stats.record(compressed.len(), proto.last_source_us, transit_us, is_full);
+                                stats.record_dropped(proto.dropped_sequences);
+                                proto.dropped_sequences = 0;
+                            }
+
+                            last_update = Instant::now();
+                            stats.maybe_print();
                         }
-                        map[..HDR].copy_from_slice(&partial_staging[..HDR]);
-                        map[off..off + var_len].copy_from_slice(&partial_staging[HDR..dec_len]);
-                    } else {
-                        // Partial frame arrived before any full frame — discard.
-                        // Source will send a full frame on the next session-info tick.
-                        continue;
                     }
+                }
 
-                    if let Err(e) = t.signal_data_ready() {
-                        eprintln!("signal_data_ready failed: {e}");
+                // When we don't have a session-info frame yet, ask the source for one.
+                // Rate-limited to once per second; retries ensure delivery even if a
+                // request is lost.
+                if !has_full_frame {
+                    if let Some(addr) = source_addr {
+                        if last_resync_request.elapsed() >= RESYNC_REQUEST_INTERVAL {
+                            let _ = socket.send_to(&[0u8; 1], addr);
+                            last_resync_request = Instant::now();
+                        }
                     }
-
-                    // Compute end-to-end latency: source processing + network transit.
-                    if let Some(start) = seq_start.take() {
-                        let transit_us = start.elapsed().as_micros() as u64;
-                        let is_full = res.buf_offset == u32::MAX;
-                        stats.record(compressed.len(), proto.last_source_us, transit_us, is_full);
-                        stats.record_dropped(proto.dropped_sequences);
-                        proto.dropped_sequences = 0;
-                    }
-
-                    last_update = Instant::now();
-                    stats.maybe_print();
                 }
             }
 
@@ -176,6 +194,7 @@ pub fn run(
                     }
                     telemetry = None;
                     has_full_frame = false;
+                    source_addr = None;
                 }
                 // In busy-wait mode the loop spins immediately; in blocking mode
                 // recv_from already slept up to its 1s timeout.
