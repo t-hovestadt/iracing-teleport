@@ -19,6 +19,24 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 // connect while still being negligible overhead during normal racing.
 const FULL_FRAME_INTERVAL: Duration = Duration::from_secs(10);
 
+/// Returns the byte offset just past the end of the irsdk session-info YAML blob.
+/// Session-info frames send only this static prefix (header + variable headers +
+/// session YAML, ~150–250 KB) rather than the full 1.1 MB map. The varBuf region
+/// is kept current by the per-tick partial frames. Target delays the SimHub signal
+/// until after the first partial frame so SimHub always sees a fully-populated map.
+/// Falls back to `data.len()` if the offsets look invalid.
+fn session_info_end(data: &[u8]) -> usize {
+    fn read_i32(data: &[u8], offset: usize) -> Option<i32> {
+        data.get(offset..offset + 4)
+            .and_then(|s| s.try_into().ok())
+            .map(i32::from_le_bytes)
+    }
+    let info_offset = read_i32(data, 20).unwrap_or(0) as usize;
+    let info_len   = read_i32(data, 16).unwrap_or(0) as usize;
+    let end = info_offset.saturating_add(info_len);
+    if end > 112 && end <= data.len() { end } else { data.len() }
+}
+
 pub fn run(
     bind: &str,
     target: &str,
@@ -157,15 +175,17 @@ pub fn run(
 
         last_data = Instant::now();
 
-        // Decide: full-map frame or partial varBuf frame.
+        // Decide: session-info frame or partial varBuf frame.
         //
-        // Send a full-map frame when sessionInfoUpdate changes (new session,
+        // Send a session-info frame when sessionInfoUpdate changes (new session,
         // new track, car change etc.), when a target has requested a resync, or
-        // when FULL_FRAME_INTERVAL has elapsed as a fallback. The full map
-        // ensures SimHub receives the complete shared-memory region — header,
-        // variable headers, session YAML, and varBuf telemetry data — in a
-        // single decompression, so it activates immediately without waiting for
-        // subsequent partial frames to fill in the varBuf area.
+        // when FULL_FRAME_INTERVAL has elapsed as a fallback. Session-info frames
+        // carry the static prefix only — header, variable headers, and session YAML
+        // (~150–250 KB) — via session_info_end(). Target writes this prefix to the
+        // map but withholds the SimHub SetEvent signal. The following partial frame
+        // fills the varBuf region, then signals SimHub so it always sees a fully-
+        // populated map on the first notification. Session-info frames are rare
+        // (session changes + 10 s fallback) so the bandwidth savings are worthwhile.
         // For every other tick send only the active variable buffer (~5–15 KB).
         let force_full = last_full_frame.elapsed() >= FULL_FRAME_INTERVAL || pending_resync;
         let (buf_offset, payload_slice) = {
@@ -180,13 +200,13 @@ pub fn run(
                 last_session_update = session_update;
                 last_full_frame = Instant::now();
                 pending_resync = false;
-                (u32::MAX, 0..data.len())
+                (u32::MAX, 0..session_info_end(data))
             } else if let Some((off, len)) = telemetry.active_var_buf() {
                 (off as u32, off..off + len)
             } else {
                 last_full_frame = Instant::now();
                 pending_resync = false;
-                (u32::MAX, 0..data.len())
+                (u32::MAX, 0..session_info_end(data))
             }
         };
 
