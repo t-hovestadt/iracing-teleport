@@ -102,8 +102,10 @@ Both tools print a stats line every 5 seconds and a summary on shutdown:
 ```
 
 The target latency figure is end-to-end: source processing time plus network transit.
-Latency spikes to ~150 µs on session-info change frames (full 1.1 MB map); normal
-frames send only the active variable buffer (~5–15 KB, 1 fragment).
+Session-info frames (sent on session changes and every 30 s) carry only the static
+prefix of the map (irsdk header + variable headers + session YAML, typically ~150–250 KB)
+rather than the full 1.1 MB, cutting their latency from ~750 µs to ~100–200 µs.
+Normal frames send only the active variable buffer (~5–15 KB, 1 fragment).
 
 ---
 
@@ -161,7 +163,7 @@ The receiver reassembles fragments out-of-order and discards duplicates. A new s
 
 ### Performance design
 
-- **Partial telemetry**: iRacing's header exposes a ring of up to 4 variable buffers (~5–15 KB each). Source reads the highest-tick slot each frame and sends only that slice, cutting per-frame data from ~1.1 MB to ~5–15 KB and fragment count from ~23 to 1. Full frames are sent on session changes and every 30 s for target resync.
+- **Partial telemetry**: iRacing's header exposes a ring of up to 4 variable buffers (~5–15 KB each). Source reads the highest-tick slot each frame and sends only that slice, cutting per-frame data from ~1.1 MB to ~5–15 KB and fragment count from ~23 to 1. On session changes and every 30 s for target resync, source sends only the static prefix of the map (irsdk header + variable headers + session YAML, ~150–250 KB) rather than the full 1.1 MB — the varBuf area is kept current by the per-frame partial updates.
 - **2 MB socket buffers** on both sides (via `socket2`) — the OS default of 64 KB would drop all but the first 7 fragments of a full frame.
 - **Zero-allocation hot path** — compression writes into a pre-allocated buffer; decompression writes directly into the mapped memory region.
 - **1 ms timer resolution** — source and target call `timeBeginPeriod(1)` on startup so Windows sleep and event waits resolve at 1 ms granularity rather than the default 15.6 ms.
@@ -187,7 +189,7 @@ This project started as a from-scratch reimplementation of [iracing-teleport](ht
 - **OS socket buffers set to 2 MB** — the original used the OS default, which is smaller than a single full frame on Windows.
 - **Target address parsed once** — the original parsed a `&str` address inside the fragment loop.
 - **Pre-allocated compression buffer** — the original allocated a new `Vec` per frame.
-- **Zero-copy decompression for full frames** — full frames decompress directly into shared memory; partial frames decompress to a small staging buffer then write header and varBuf separately.
+- **Minimal session-change frames** — on session changes and periodic resyncs, source sends only the static map prefix (irsdk header + variable headers + session YAML, ~150–250 KB) instead of the full 1.1 MB; the varBuf area is already current from per-frame partial updates. Session-info frames decompress directly into shared memory at offset 0; partial frames decompress to a staging buffer then write header and varBuf separately.
 - **Separate `source.exe` and `target.exe`** — simpler to distribute; users only need the one relevant to their machine.
 - **Proper reconnect logic** — the original exited if iRacing hadn't started within 5 seconds; source now waits indefinitely using a typed `OpenResult` enum.
 - **Actual region size via `VirtualQuery`** — instead of a hardcoded constant.
