@@ -12,6 +12,9 @@ use crate::telemetry::{MAX_TELEMETRY_SIZE, Telemetry, TelemetryError, TelemetryP
 const RECONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL_INTERVAL_MS: u32 = 200;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
+// Force a full-map frame at least this often so a restarted target can resync
+// without waiting for a session change.
+const FULL_FRAME_INTERVAL: Duration = Duration::from_secs(30);
 
 pub fn run(
     bind: &str,
@@ -81,6 +84,9 @@ pub fn run(
     // Tracks the last-seen sessionInfoUpdate counter. When it changes we send a
     // full-map frame so the target's header + session YAML stay current.
     let mut last_session_update: i32 = -1;
+    // Tracks when we last sent a full-map frame. Used to force periodic full
+    // frames so a restarted target can resync without waiting for a session change.
+    let mut last_full_frame = Instant::now();
 
     loop {
         if shutdown.try_recv().is_ok() {
@@ -105,6 +111,7 @@ pub fn run(
                 drop(telemetry);
                 got_data = false;
                 last_session_update = -1;
+                last_full_frame = Instant::now() - FULL_FRAME_INTERVAL;
                 telemetry = loop {
                     match try_open(&shutdown)? {
                         OpenResult::Connected(t) => break t,
@@ -130,10 +137,12 @@ pub fn run(
 
         // Decide: full frame or partial varBuf frame.
         //
-        // Send a full frame whenever sessionInfoUpdate changes (new session,
-        // new track, car change etc.) so the target has a valid header, YAML
-        // blob, and variable descriptors. For every other tick, send only the
-        // active variable buffer — a few KB instead of 1.1 MB.
+        // Send a full frame when sessionInfoUpdate changes (new session, new
+        // track, car change etc.) or when FULL_FRAME_INTERVAL has elapsed
+        // (so a restarted target resyncs within ~30 s without needing a
+        // session change). For every other tick send only the active variable
+        // buffer — a few KB instead of 1.1 MB.
+        let force_full = last_full_frame.elapsed() >= FULL_FRAME_INTERVAL;
         let (buf_offset, payload_slice) = {
             let data = telemetry.as_slice();
             let session_update = data
@@ -142,12 +151,14 @@ pub fn run(
                 .map(i32::from_le_bytes)
                 .unwrap_or(0);
 
-            if session_update != last_session_update {
+            if session_update != last_session_update || force_full {
                 last_session_update = session_update;
+                last_full_frame = Instant::now();
                 (u32::MAX, 0..data.len())
             } else if let Some((off, len)) = telemetry.active_var_buf() {
                 (off as u32, off..off + len)
             } else {
+                last_full_frame = Instant::now();
                 (u32::MAX, 0..data.len())
             }
         };

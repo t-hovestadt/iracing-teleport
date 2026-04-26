@@ -38,6 +38,12 @@ pub struct Sender {
     buf: Vec<u8>,
 }
 
+impl Default for Sender {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Sender {
     pub fn new() -> Self {
         Self {

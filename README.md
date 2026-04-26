@@ -67,45 +67,54 @@ source.exe --unicast --target 192.168.1.50:5000
 
 ```
 Options:
-  --bind <ADDR>     Local address to bind to          [default: 0.0.0.0:0]
-  --target <ADDR>   Destination (multicast group:port or unicast IP:port)
-                                                      [default: 239.255.0.1:5000]
-  --unicast         Send directly to one host instead of multicast
-  --help            Print help
-  --version         Print version
+  --bind <ADDR>       Local address to bind to          [default: 0.0.0.0:0]
+  --target <ADDR>     Destination (multicast group:port or unicast IP:port)
+                                                        [default: 239.255.0.1:5000]
+  --unicast           Send directly to one host instead of multicast
+  --pin-core <N>      Pin the source thread to CPU core N for lower jitter
+  --help              Print help
+  --version           Print version
 ```
 
 ### target.exe
 
 ```
 Options:
-  --bind <ADDR>     Address and port to listen on     [default: 0.0.0.0:5000]
-  --group <ADDR>    Multicast group to join           [default: 239.255.0.1]
-  --unicast         Expect a direct unicast stream instead of multicast
-  --help            Print help
-  --version         Print version
+  --bind <ADDR>       Address and port to listen on     [default: 0.0.0.0:5000]
+  --group <ADDR>      Multicast group to join           [default: 239.255.0.1]
+  --unicast           Expect a direct unicast stream instead of multicast
+  --busy-wait         Spin on recv instead of sleeping — burns one CPU core
+                      but removes ~500 µs of OS scheduler wake-up jitter
+  --pin-core <N>      Pin the target thread to CPU core N for lower jitter
+  --help              Print help
+  --version           Print version
 ```
 
 ---
 
 ## Status output
 
-Both tools print a stats line every 5 seconds:
+Both tools print a stats line every 5 seconds and a summary on shutdown:
 
 ```
-[source] 60.0 msg/s  48.20 Mbps  23.0 frags/msg  312 µs avg latency
-[target] 60.0 msg/s  48.20 Mbps  23.0 frags/msg  891 µs avg latency
+[source] 60.0 msg/s  0.48 Mbps  1.0 frags/msg  8/12/18 µs p50/p99/max  0 dropped
+[target] 60.0 msg/s  0.48 Mbps  1.0 frags/msg  210/280/340 µs p50/p99/max  0 dropped
 ```
 
 The target latency figure is end-to-end: source processing time plus network transit.
+Latency spikes to ~150 µs on session-info change frames (full 1.1 MB map); normal
+frames send only the active variable buffer (~5–15 KB, 1 fragment).
 
 ---
 
 ## Behaviour
 
-- **source** waits indefinitely for iRacing to start. Once connected it prints the telemetry map size. If iRacing stops responding for 10 seconds it drops the connection and waits again.
-- **target** creates its local shared-memory region the first time a complete frame arrives. If no data is received for 10 seconds the map is closed; it is recreated when data resumes.
-- Press **Ctrl-C** on either machine to shut down cleanly.
+- **source** waits indefinitely for iRacing to start. Once connected it prints the telemetry map size and starts streaming.
+- Each frame, source sends only the **active variable buffer** (~5–15 KB) rather than the full 1.1 MB map. A full frame is sent when the session changes (new track, car swap, etc.) or every 30 seconds, so a restarted target resyncs quickly without needing a session change.
+- **Heartbeats**: when iRacing is open but between sessions (menus, loading screens), source sends a small keep-alive packet every second so target keeps its shared-memory region alive for SimHub.
+- **target** creates its local shared-memory region the first time a complete frame arrives. If no data is received for 10 seconds the `IRSDK_ST_CONNECTED` status flag is cleared (so SimHub sees a clean disconnect) and the map is closed; it is recreated when data resumes.
+- If iRacing stops responding for 10 seconds, source drops the connection and waits to reconnect.
+- Press **Ctrl-C** on either machine to shut down cleanly; both tools print a lifetime summary.
 
 ---
 
@@ -126,8 +135,10 @@ Cross-compiling for Windows from macOS or Linux requires `mingw-w64` and the `x8
 ```
 rustup target add x86_64-pc-windows-gnu
 brew install mingw-w64          # macOS
-cargo build --release --target x86_64-pc-windows-gnu
+CARGO_TARGET_DIR=/tmp/iracing-build cargo build --release --target x86_64-pc-windows-gnu
 ```
+
+> **Note:** If your working directory path contains spaces, set `CARGO_TARGET_DIR` to a path without spaces (the `mingw-w64` linker doesn't handle quoted paths).
 
 ---
 
@@ -135,24 +146,29 @@ cargo build --release --target x86_64-pc-windows-gnu
 
 ### Protocol
 
-Each telemetry frame (~1.1 MB uncompressed) is compressed with LZ4 and split into 9,000-byte UDP datagrams. Every datagram carries a 20-byte header:
+Each telemetry frame is compressed with LZ4 and split into 9,000-byte UDP datagrams. Every datagram carries a 24-byte header:
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `source_us` | u64 | Microseconds spent on source side |
 | `sequence` | u32 | Monotonically increasing per message |
 | `payload_size` | u32 | Total compressed bytes across all fragments |
+| `buf_offset` | u32 | Byte offset to write decompressed data in the target map; `u32::MAX` = full frame (write at offset 0) |
 | `fragment` | u16 | 0-based index of this fragment |
-| `fragments` | u16 | Total fragment count for this sequence |
+| `fragments` | u16 | Total fragment count for this sequence; `0` = heartbeat (no payload) |
 
 The receiver reassembles fragments out-of-order and discards duplicates. A new sequence discards any in-progress assembly from the previous one.
 
 ### Performance design
 
-- **2 MB socket buffers** on both sides (via `socket2`) — the OS default of 64 KB drops all but the first 7 of ~23 fragments per frame, losing the whole frame.
+- **Partial telemetry**: iRacing's header exposes a ring of up to 4 variable buffers (~5–15 KB each). Source reads the highest-tick slot each frame and sends only that slice, cutting per-frame data from ~1.1 MB to ~5–15 KB and fragment count from ~23 to 1. Full frames are sent on session changes and every 30 s for target resync.
+- **2 MB socket buffers** on both sides (via `socket2`) — the OS default of 64 KB would drop all but the first 7 fragments of a full frame.
 - **Zero-allocation hot path** — compression writes into a pre-allocated buffer; decompression writes directly into the mapped memory region.
+- **1 ms timer resolution** — source and target call `timeBeginPeriod(1)` on startup so Windows sleep and event waits resolve at 1 ms granularity rather than the default 15.6 ms.
+- **Above-normal thread priority** — both binaries raise their main thread priority to reduce OS scheduling latency.
+- **CPU affinity** (`--pin-core N`) — optionally pins the hot thread to a single core to eliminate cross-core migration jitter.
+- **Busy-wait mode** (`--busy-wait` on target) — spins on `recv_from` instead of sleeping, trading one full CPU core for ~500 µs less OS scheduler wake-up jitter per frame.
 - **LTO + single codegen unit** in the release profile for maximum inlining across crate boundaries.
-- **Target address pre-parsed** to `SocketAddr` before the send loop — avoids re-parsing the string 23 times per frame.
 
 ---
 
@@ -160,10 +176,15 @@ The receiver reassembles fragments out-of-order and discards duplicates. A new s
 
 This project started as a from-scratch reimplementation of [iracing-teleport](https://github.com/sklose/iracing-teleport). Key differences:
 
-- **Wire header is 20 bytes, not 24** — `repr(C)` adds 4 bytes of trailing padding; `repr(C, packed)` with a compile-time size assertion removes it.
+- **Partial telemetry** — sends only the active iRacing variable buffer (~5–15 KB) per frame instead of the full 1.1 MB map, cutting latency from ~1.4 ms to ~200–500 µs on typical LAN.
+- **Heartbeats** — keep-alive packets during menus and loading screens prevent SimHub from losing its telemetry connection between sessions.
+- **STATUS flag clear on disconnect** — zeros `IRSDK_ST_CONNECTED` before closing the target memory map so SimHub sees a clean disconnect rather than a stale "still connected" flag.
+- **Latency percentiles** — stats show p50/p99/max per window and lifetime min/avg/max on shutdown, instead of a simple average.
+- **Busy-wait and CPU affinity** — optional flags for lowest possible latency on dedicated hardware.
+- **Correct 24-byte wire header** — `repr(C, packed)` with a compile-time size assertion; the original used `repr(C)` which adds 4 bytes of trailing padding, silently making the header 24 bytes with undefined layout.
 - **No undefined behaviour on receive** — reading a packed struct through a reference is UB when unaligned; replaced with `ptr::read_unaligned`.
-- **OS socket buffers set to 2 MB** — the original used the OS default, which is smaller than a single frame on Windows.
-- **Target address parsed once** — the original parsed a `&str` address inside the fragment loop, re-doing the work ~23 times per frame.
+- **OS socket buffers set to 2 MB** — the original used the OS default, which is smaller than a single full frame on Windows.
+- **Target address parsed once** — the original parsed a `&str` address inside the fragment loop.
 - **Pre-allocated compression buffer** — the original allocated a new `Vec` per frame.
 - **Zero-copy decompression** — the original decompressed into a temporary `Vec` then copied; we decompress directly into shared memory.
 - **Separate `source.exe` and `target.exe`** — simpler to distribute; users only need the one relevant to their machine.

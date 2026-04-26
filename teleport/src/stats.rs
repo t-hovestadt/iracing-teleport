@@ -17,7 +17,6 @@ pub struct Stats {
     // Lifetime totals — used for the shutdown summary.
     lifetime_updates: u64,
     lifetime_bytes: u64,
-    lifetime_fragments: u64,
     lifetime_dropped: u64,
     lifetime_latency_sum: u128,
     lifetime_latency_min: u64,
@@ -38,7 +37,6 @@ impl Stats {
             latencies: Vec::with_capacity(512),
             lifetime_updates: 0,
             lifetime_bytes: 0,
-            lifetime_fragments: 0,
             lifetime_dropped: 0,
             lifetime_latency_sum: 0,
             lifetime_latency_min: u64::MAX,
@@ -54,7 +52,6 @@ impl Stats {
 
         self.lifetime_updates += 1;
         self.lifetime_bytes += bytes as u64;
-        self.lifetime_fragments += fragments as u64;
         self.lifetime_latency_sum += latency_us as u128;
         if latency_us < self.lifetime_latency_min {
             self.lifetime_latency_min = latency_us;
