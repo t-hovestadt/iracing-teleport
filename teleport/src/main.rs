@@ -29,6 +29,10 @@ enum Command {
         /// Send directly to one host instead of multicast.
         #[arg(long)]
         unicast: bool,
+
+        /// Pin the worker thread to a specific CPU core (0-based).
+        #[arg(long, value_name = "N")]
+        pin_core: Option<usize>,
     },
 
     /// Receive telemetry and expose it as a local iRacing memory map.
@@ -44,6 +48,15 @@ enum Command {
         /// Expect a direct unicast stream instead of multicast.
         #[arg(long)]
         unicast: bool,
+
+        /// Spin on the receive socket instead of sleeping. Burns one CPU core but
+        /// shaves ~500 µs of OS scheduler jitter off every frame.
+        #[arg(long)]
+        busy_wait: bool,
+
+        /// Pin the worker thread to a specific CPU core (0-based).
+        #[arg(long, value_name = "N")]
+        pin_core: Option<usize>,
     },
 }
 
@@ -58,16 +71,16 @@ fn main() {
     .expect("failed to install Ctrl-C handler");
 
     let result = match cli.command {
-        Command::Source { bind, target, unicast } => {
+        Command::Source { bind, target, unicast, pin_core } => {
             let mode = if unicast { "unicast" } else { "multicast" };
             println!("source → {target} ({mode})");
-            source::run(&bind, &target, unicast, rx)
+            source::run(&bind, &target, unicast, pin_core, rx)
         }
-        Command::Target { bind, group, unicast } => {
+        Command::Target { bind, group, unicast, busy_wait, pin_core } => {
             let dest = if unicast { "unicast" } else { group.as_str() };
             let mode = if unicast { "unicast" } else { "multicast" };
             println!("target ← {dest} ({mode})");
-            target::run(&bind, unicast, &group, rx)
+            target::run(&bind, unicast, &group, busy_wait, pin_core, rx)
         }
     };
 

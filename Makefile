@@ -1,6 +1,5 @@
 TARGET = x86_64-pc-windows-gnu
-RELEASE_DIR = target/$(TARGET)/release
-BIN_NAME = iracing-teleport
+RELEASE_DIR = teleport/target/$(TARGET)/release
 
 # Default: cross-compile for Windows
 all: build
@@ -11,21 +10,22 @@ setup:
 	brew list mingw-w64 || brew install mingw-w64
 
 lint:
-	cargo fmt --all
-	cargo clippy --target=$(TARGET) --all-targets --all-features --fix --allow-dirty
+	cd teleport && cargo fmt --all
+	cd teleport && cargo clippy --target=$(TARGET) --all-targets --all-features --fix --allow-dirty
 
 # Cross compile using cargo
 build:
-	cargo build --target=$(TARGET) --release
+	cd teleport && cargo build --target=$(TARGET) --release
 
 # Run tests of cross-platform bits
 test:
-	cargo test --target=$(TARGET) --release
+	cd teleport && cargo test --target=$(TARGET) --release
 
 # Remove compiled artifacts
 clean:
-	cargo clean
+	cd teleport && cargo clean
 
-# Show the output binary path
+# Show the output binary paths
 print:
-	@echo "Binary: $(RELEASE_DIR)/$(BIN_NAME).exe"
+	@echo "source: $(RELEASE_DIR)/source.exe"
+	@echo "target: $(RELEASE_DIR)/target.exe"

@@ -44,6 +44,17 @@ pub trait TelemetryProvider: Sized {
 
     /// Size of the mapped region in bytes.
     fn size(&self) -> usize;
+
+    /// Returns `(byte_offset, byte_len)` of the active iRSdk variable buffer
+    /// within the map, or `None` if the header can't be parsed (caller falls
+    /// back to sending the full map).
+    fn active_var_buf(&self) -> Option<(usize, usize)> {
+        None
+    }
+
+    /// Zero the IRSDK_ST_CONNECTED status flag at offset 4 so that consumers
+    /// (e.g. SimHub) observe a clean disconnect when we close the map.
+    fn clear_status(&mut self) {}
 }
 
 // ── Platform dispatch ─────────────────────────────────────────────────────────
