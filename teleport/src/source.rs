@@ -14,8 +14,10 @@ const POLL_INTERVAL_MS: u32 = 200;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 // Fallback interval for sending a session-info frame when the bidirectional
 // resync-request mechanism can't reach the source (e.g. firewall blocking
-// inbound UDP). Normal resync is driven by target requests — see pending_resync.
-const FULL_FRAME_INTERVAL: Duration = Duration::from_secs(300);
+// inbound UDP to source's ephemeral port). Normal resync is driven by target
+// requests — see pending_resync. 10 s is fast enough to feel instant on first
+// connect while still being negligible overhead during normal racing.
+const FULL_FRAME_INTERVAL: Duration = Duration::from_secs(10);
 
 pub fn run(
     bind: &str,
@@ -147,6 +149,10 @@ pub fn run(
         if !got_data {
             println!("Session started.");
             got_data = true;
+            // Force a session-info frame on the very first tick so any target
+            // that was already waiting syncs immediately without needing the
+            // fallback timer or a successful resync request.
+            last_full_frame = Instant::now() - FULL_FRAME_INTERVAL;
         }
 
         last_data = Instant::now();
