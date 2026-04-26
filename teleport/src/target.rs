@@ -151,7 +151,8 @@ pub fn run(
                     // Compute end-to-end latency: source processing + network transit.
                     if let Some(start) = seq_start.take() {
                         let transit_us = start.elapsed().as_micros() as u64;
-                        stats.record(compressed.len(), proto.last_fragment_count, proto.last_source_us + transit_us);
+                        let is_full = res.buf_offset == u32::MAX;
+                        stats.record(compressed.len(), proto.last_source_us, transit_us, is_full);
                         stats.record_dropped(proto.dropped_sequences);
                         proto.dropped_sequences = 0;
                     }
