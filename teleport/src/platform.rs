@@ -6,9 +6,11 @@
 
 #[cfg(windows)]
 mod imp {
+    use windows_sys::Win32::Foundation::HANDLE;
     use windows_sys::Win32::Media::{timeBeginPeriod, timeEndPeriod};
     use windows_sys::Win32::System::Threading::{
-        GetCurrentThread, SetThreadAffinityMask, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
+        AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW, GetCurrentThread,
+        SetThreadAffinityMask, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
     };
 
     /// RAII guard that requests 1 ms Windows timer resolution for the lifetime
@@ -37,6 +39,33 @@ mod imp {
         unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL) };
     }
 
+    /// Register this thread with MMCSS under the "Games" task for reserved CPU time
+    /// and dynamic priority boosts (~18 vs ABOVE_NORMAL ~10). Only use on the target
+    /// PC — on the source PC iRacing holds its own MMCSS registrations and adding
+    /// another competitor risks micro-stutters in the game.
+    pub struct MmcssGuard(HANDLE);
+
+    impl MmcssGuard {
+        pub fn acquire() -> Option<Self> {
+            let task: Vec<u16> = "Games\0".encode_utf16().collect();
+            let mut task_index = 0u32;
+            let handle =
+                unsafe { AvSetMmThreadCharacteristicsW(task.as_ptr(), &mut task_index) };
+            if handle == 0 {
+                eprintln!("MMCSS registration failed (continuing without it)");
+                None
+            } else {
+                Some(Self(handle))
+            }
+        }
+    }
+
+    impl Drop for MmcssGuard {
+        fn drop(&mut self) {
+            unsafe { AvRevertMmThreadCharacteristics(self.0) };
+        }
+    }
+
     /// Pin the calling thread to a single CPU core. Reduces jitter from
     /// cross-core migration at the cost of giving up scheduling flexibility.
     /// `core` is a 0-based CPU index; cores past 63 are ignored.
@@ -61,8 +90,12 @@ mod imp {
     impl HighResTimer {
         pub fn acquire() -> Self { Self }
     }
+    pub struct MmcssGuard;
+    impl MmcssGuard {
+        pub fn acquire() -> Option<Self> { Some(Self) }
+    }
     pub fn boost_thread_priority() {}
     pub fn pin_thread_to_core(_core: usize) {}
 }
 
-pub use imp::{HighResTimer, boost_thread_priority, pin_thread_to_core};
+pub use imp::{HighResTimer, MmcssGuard, boost_thread_priority, pin_thread_to_core};
