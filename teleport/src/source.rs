@@ -157,12 +157,12 @@ pub fn run(
             if session_update != last_session_update || force_full {
                 last_session_update = session_update;
                 last_full_frame = Instant::now();
-                (u32::MAX, 0..data.len())
+                (u32::MAX, 0..session_info_end(data))
             } else if let Some((off, len)) = telemetry.active_var_buf() {
                 (off as u32, off..off + len)
             } else {
                 last_full_frame = Instant::now();
-                (u32::MAX, 0..data.len())
+                (u32::MAX, 0..session_info_end(data))
             }
         };
 
@@ -207,6 +207,28 @@ enum OpenResult {
     Retry,
     /// Shutdown signal received — caller should exit.
     Shutdown,
+}
+
+/// Byte offset one-past-the-end of the irsdk static prefix (header + variable
+/// headers + session YAML).  Source sends only this prefix on session changes
+/// rather than the full 1.1 MB map; the varBuf area is already kept current by
+/// the per-frame partial updates.
+///
+/// irsdk_header layout (all i32 LE):
+///   offset 16 — sessionInfoLen
+///   offset 20 — sessionInfoOffset
+///
+/// Falls back to the full map length if the header fields look invalid.
+fn session_info_end(data: &[u8]) -> usize {
+    fn read_i32(data: &[u8], offset: usize) -> Option<i32> {
+        data.get(offset..offset + 4)
+            .and_then(|s| s.try_into().ok())
+            .map(i32::from_le_bytes)
+    }
+    let info_offset = read_i32(data, 20).unwrap_or(0) as usize;
+    let info_len   = read_i32(data, 16).unwrap_or(0) as usize;
+    let end = info_offset.saturating_add(info_len);
+    if end > 112 && end <= data.len() { end } else { data.len() }
 }
 
 fn try_open(shutdown: &mpsc::Receiver<()>) -> std::io::Result<OpenResult> {
