@@ -22,26 +22,26 @@ Pre-built Windows x64 binaries are on the [Releases](../../releases/latest) page
 |------|---------|
 | `source.exe` | iRacing PC |
 | `target.exe` | SimHub PC |
-| `teleport.exe` | Either — combined CLI (`teleport source` / `teleport target`) |
+| `teleport.exe` | Either, combined CLI (`teleport source` / `teleport target`) |
 
 ---
 
 ## Quick start
 
-**Default (multicast — works on most home networks):**
+Default (multicast, works on most home networks):
 
 1. Run `target.exe` on your SimHub PC
 2. Run `source.exe` on your iRacing PC
 
 Start them in any order. source waits for iRacing to launch; target waits for data.
 
-**Unicast (if multicast doesn't work on your network):**
+Unicast (if multicast doesn't work on your network):
 
 ```
 # SimHub PC
 target.exe --unicast
 
-# iRacing PC — replace with your SimHub machine's IP
+# iRacing PC (replace with your SimHub machine's IP)
 source.exe --unicast --target 192.168.1.50:5000
 ```
 
@@ -55,7 +55,7 @@ source.exe --unicast --target 192.168.1.50:5000
 | `--target <ADDR>` | ✓ | | `239.255.0.1:5000` | Destination (multicast group:port or unicast IP:port) |
 | `--unicast` | ✓ | ✓ | off | Send/receive directly host-to-host instead of multicast |
 | `--group <ADDR>` | | ✓ | `239.255.0.1` | Multicast group to join |
-| `--busy-wait` | | ✓ | off | Spin on recv instead of sleeping — lower jitter, costs one CPU core |
+| `--busy-wait` | | ✓ | off | Spin on recv instead of sleeping; lower jitter, costs one CPU core |
 | `--pin-core <N>` | ✓ | ✓ | off | Pin the worker thread to CPU core N (0-based) |
 
 ---
@@ -91,7 +91,7 @@ brew install mingw-w64          # macOS
 CARGO_TARGET_DIR=/tmp/iracing-build cargo build --release --target x86_64-pc-windows-gnu
 ```
 
-> If your working directory path contains spaces, set `CARGO_TARGET_DIR` to a path without spaces — the `mingw-w64` linker doesn't handle quoted paths.
+> If your working directory path contains spaces, set `CARGO_TARGET_DIR` to a path without spaces (the `mingw-w64` linker doesn't handle quoted paths).
 
 ---
 
@@ -115,11 +115,11 @@ The receiver reassembles fragments out-of-order and discards duplicates. A new s
 
 ### Performance design
 
-iRacing's header exposes a ring of variable buffers (~5–15 KB each). source reads the highest-tick slot each frame and sends only that slice, cutting per-frame data from ~1.1 MB to ~5–15 KB and fragment count from ~23 to 1. Session-info frames (sent on session changes and reconnects) carry only the static map prefix — header + variable headers + session YAML, ~150–250 KB — rather than the full map. Session-info frames write to shared memory but withhold the SimHub `SetEvent` signal; the next partial frame fills the varBuf region and then fires the signal so SimHub always reads a complete map on first notification.
+iRacing's header exposes a ring of variable buffers (~5–15 KB each). source reads the highest-tick slot each frame and sends only that slice, cutting per-frame data from ~1.1 MB to ~5–15 KB and fragment count from ~23 to 1. Session-info frames (sent on session changes and reconnects) carry only the static map prefix (header + variable headers + session YAML, ~150–250 KB) rather than the full map. Session-info frames write to shared memory but withhold the SimHub `SetEvent` signal; the next partial frame fills the varBuf region and then fires the signal so SimHub always reads a complete map on first notification.
 
 Socket buffers on both sides are set to 2 MB. The OS default (64 KB) is smaller than one full frame, which would silently drop fragments. Compression writes into a pre-allocated buffer; decompression writes directly into the mapped memory region.
 
-Scheduling: both binaries call `timeBeginPeriod(1)` for 1 ms timer resolution (default is 15.6 ms) and run at above-normal thread priority. target also registers with MMCSS under the "Games" task for reserved CPU time — not applied to source to avoid competing with iRacing's own registrations. `--pin-core N` pins the thread to a single core; `--busy-wait` (target only) spins on recv instead of sleeping, trading one CPU core for ~500 µs less wakeup jitter.
+Scheduling: both binaries call `timeBeginPeriod(1)` for 1 ms timer resolution (default is 15.6 ms) and run at above-normal thread priority. target also registers with MMCSS under the "Games" task for reserved CPU time, not applied to source to avoid competing with iRacing's own registrations. `--pin-core N` pins the thread to a single core; `--busy-wait` (target only) spins on recv instead of sleeping, trading one CPU core for ~500 µs less wakeup jitter.
 
 Release profile uses LTO and a single codegen unit.
 
@@ -130,17 +130,17 @@ Release profile uses LTO and a single codegen unit.
 
 Rewritten from scratch based on [sklose/iracing-teleport](https://github.com/sklose/iracing-teleport). Main differences:
 
-- **Partial frames** — sends only the active variable buffer (~5–15 KB) per frame instead of the full 1.1 MB map; latency drops from ~1.4 ms to ~200–500 µs on a typical LAN.
+- **Partial frames**: sends only the active variable buffer (~5–15 KB) per frame instead of the full 1.1 MB map; latency drops from ~1.4 ms to ~200–500 µs on a typical LAN.
 - Each partial frame includes the current 112-byte irsdk header so target always has up-to-date `tickCount` values. Without this, SimHub can silently read a stale varBuf slot when iRacing rotates its ring buffer.
 - Session-info frames write the static map prefix but withhold `SetEvent`; the next partial frame fills varBuf and fires the signal so SimHub reads a complete map on first notification.
-- **Bidirectional resync** — target sends a 1-byte UDP packet to source when it needs a session-info frame; source responds on the next tick instead of waiting for a fixed timer.
-- **MMCSS on target** — registers under the Windows "Games" multimedia task for reserved CPU time; skipped on source to avoid competing with iRacing's own registrations.
+- **Bidirectional resync**: target sends a 1-byte UDP packet to source when it needs a session-info frame; source responds on the next tick instead of waiting for a fixed timer.
+- **MMCSS on target**: registers under the Windows "Games" multimedia task for reserved CPU time; skipped on source to avoid competing with iRacing's own registrations.
 - Heartbeat packets during menus and loading screens keep the SimHub connection alive between sessions.
 - `IRSDK_ST_CONNECTED` is zeroed before closing the target map so SimHub sees a clean disconnect.
 - Stats show p50/p99/max latency per window with end-to-end measurement (source processing + network transit).
 - Socket buffers set to 2 MB on both sides; the original used the OS default, which is smaller than one full frame.
 - `repr(C, packed)` wire header with a compile-time size assertion; the original's `repr(C)` added 4 bytes of trailing padding.
-- Receive path uses `ptr::read_unaligned` — reading a packed struct through a reference is undefined behaviour when unaligned.
+- Receive path uses `ptr::read_unaligned`; reading a packed struct through a reference is undefined behaviour when unaligned.
 - Pre-allocated compression buffer; the original allocated a new `Vec` per frame.
 - source waits indefinitely for iRacing to start; the original exited after 5 seconds.
 - Shared memory region size read via `VirtualQuery` rather than a hardcoded constant.
