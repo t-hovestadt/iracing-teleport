@@ -4,7 +4,7 @@ use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use crate::platform::{boost_thread_priority, pin_thread_to_core, HighResTimer};
+use crate::platform::{boost_thread_priority, pin_thread_to_core, HighResTimer, MmcssGuard};
 use crate::protocol::{MAX_DATAGRAM_SIZE, Receiver as ProtoReceiver};
 use crate::stats::Stats;
 use crate::telemetry::{MAX_TELEMETRY_SIZE, Telemetry, TelemetryProvider};
@@ -23,6 +23,7 @@ pub fn run(
 ) -> std::io::Result<()> {
     let _timer = HighResTimer::acquire();
     boost_thread_priority();
+    let _mmcss = MmcssGuard::acquire();
     if let Some(core) = pin_core {
         pin_thread_to_core(core);
     }
