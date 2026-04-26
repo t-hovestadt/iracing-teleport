@@ -137,6 +137,51 @@ impl TelemetryProvider for WindowsTelemetry {
     fn size(&self) -> usize {
         self.size
     }
+
+    fn active_var_buf(&self) -> Option<(usize, usize)> {
+        let d = self.as_slice();
+        if d.len() < 112 {
+            return None;
+        }
+        // irsdk_header offsets (all i32 little-endian):
+        //   32  numBuf   — number of active ring slots (≤ 4)
+        //   36  bufLen   — byte length of one variable buffer
+        //   48  varBuf[0..numBuf], each 16 bytes:
+        //         +0  tickCount  — highest = most-recently written slot
+        //         +4  bufOffset  — byte offset within the map
+        let buf_len = i32::from_le_bytes(d[36..40].try_into().ok()?) as usize;
+        if buf_len == 0 || buf_len > d.len() {
+            return None;
+        }
+        let num_buf = (i32::from_le_bytes(d[32..36].try_into().ok()?) as usize).min(4);
+        if num_buf == 0 {
+            return None;
+        }
+        let mut best_tick = i32::MIN;
+        let mut best_off: usize = 0;
+        for i in 0..num_buf {
+            let b = 48 + i * 16;
+            let tick = i32::from_le_bytes(d[b..b + 4].try_into().ok()?);
+            let off = i32::from_le_bytes(d[b + 4..b + 8].try_into().ok()?) as usize;
+            if tick > best_tick {
+                best_tick = tick;
+                best_off = off;
+            }
+        }
+        if best_off + buf_len > d.len() {
+            return None;
+        }
+        Some((best_off, buf_len))
+    }
+
+    fn clear_status(&mut self) {
+        // Zero the irsdk_header.status field at byte offset 4 to clear the
+        // IRSDK_ST_CONNECTED flag. SimHub polls this to detect disconnects.
+        let d = self.as_slice_mut();
+        if d.len() >= 8 {
+            d[4..8].copy_from_slice(&0u32.to_le_bytes());
+        }
+    }
 }
 
 fn query_region_size(ptr: *const u8) -> Option<usize> {

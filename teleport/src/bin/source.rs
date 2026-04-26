@@ -20,6 +20,10 @@ struct Args {
     /// Send directly to one host instead of multicast.
     #[arg(long)]
     unicast: bool,
+
+    /// Pin the worker thread to a specific CPU core (0-based).
+    #[arg(long, value_name = "N")]
+    pin_core: Option<usize>,
 }
 
 fn main() {
@@ -35,7 +39,7 @@ fn main() {
     let mode = if args.unicast { "unicast" } else { "multicast" };
     println!("source → {} ({})", args.target, mode);
 
-    if let Err(e) = source::run(&args.bind, &args.target, args.unicast, rx) {
+    if let Err(e) = source::run(&args.bind, &args.target, args.unicast, args.pin_core, rx) {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
