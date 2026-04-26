@@ -10,9 +10,11 @@ pub struct Stats {
     // Current 5-second window.
     updates: u64,
     bytes: u64,
-    fragments: u64,
     dropped: u64,
-    latencies: Vec<u64>,
+    partial_latencies: Vec<u64>,
+    full_latencies: Vec<u64>,
+    // source_us for partial frames; only populated on target (transit_us > 0).
+    source_latencies: Vec<u64>,
 
     // Lifetime totals — used for the shutdown summary.
     lifetime_updates: u64,
@@ -32,9 +34,10 @@ impl Stats {
             window_start: now,
             updates: 0,
             bytes: 0,
-            fragments: 0,
             dropped: 0,
-            latencies: Vec::with_capacity(512),
+            partial_latencies: Vec::with_capacity(512),
+            full_latencies: Vec::with_capacity(8),
+            source_latencies: Vec::with_capacity(512),
             lifetime_updates: 0,
             lifetime_bytes: 0,
             lifetime_dropped: 0,
@@ -44,20 +47,35 @@ impl Stats {
         }
     }
 
-    pub fn record(&mut self, bytes: usize, fragments: u16, latency_us: u64) {
+    /// Record one delivered frame.
+    ///
+    /// `source_us` — microseconds spent compressing on the source side
+    ///   (carried in the wire header).
+    /// `transit_us` — microseconds from first fragment arrival to after
+    ///   decompression on the target side; pass `0` on the source.
+    /// `is_full` — true for full-map frames, false for partial varBuf frames.
+    pub fn record(&mut self, bytes: usize, source_us: u64, transit_us: u64, is_full: bool) {
+        let total_us = source_us + transit_us;
         self.updates += 1;
         self.bytes += bytes as u64;
-        self.fragments += fragments as u64;
-        self.latencies.push(latency_us);
+
+        if is_full {
+            self.full_latencies.push(total_us);
+        } else {
+            self.partial_latencies.push(total_us);
+            if transit_us > 0 {
+                self.source_latencies.push(source_us);
+            }
+        }
 
         self.lifetime_updates += 1;
         self.lifetime_bytes += bytes as u64;
-        self.lifetime_latency_sum += latency_us as u128;
-        if latency_us < self.lifetime_latency_min {
-            self.lifetime_latency_min = latency_us;
+        self.lifetime_latency_sum += total_us as u128;
+        if total_us < self.lifetime_latency_min {
+            self.lifetime_latency_min = total_us;
         }
-        if latency_us > self.lifetime_latency_max {
-            self.lifetime_latency_max = latency_us;
+        if total_us > self.lifetime_latency_max {
+            self.lifetime_latency_max = total_us;
         }
     }
 
@@ -74,21 +92,33 @@ impl Stats {
         let elapsed_s = elapsed.as_secs_f64();
         let rate = self.updates as f64 / elapsed_s;
         let mbps = (self.bytes as f64 * 8.0) / (elapsed_s * 1_000_000.0);
-        let avg_frags = self.fragments as f64 / self.updates.max(1) as f64;
-        let (p50, p99, max) = percentiles(&mut self.latencies);
 
-        println!(
-            "[{name}] {rate:.1} msg/s  {mbps:.2} Mbps  {frags:.1} frags/msg  {p50}/{p99}/{max} µs p50/p99/max  {dropped} dropped",
+        let (pp50, pp99, pmax) = percentiles(&mut self.partial_latencies);
+
+        let full_count = self.full_latencies.len() as u64;
+        let full_avg = self.full_latencies.iter().sum::<u64>().checked_div(full_count).unwrap_or(0);
+
+        let (sp50, sp99, _) = percentiles(&mut self.source_latencies);
+
+        let mut line = format!(
+            "[{name}] {rate:.1} msg/s  {mbps:.2} Mbps  {pp50}/{pp99}/{pmax} µs p50/p99/max",
             name = self.name,
-            frags = avg_frags,
-            dropped = self.dropped,
         );
+        if full_count > 0 {
+            line.push_str(&format!("  {full_count} full: {full_avg} µs avg"));
+        }
+        if !self.source_latencies.is_empty() {
+            line.push_str(&format!("  src: {sp50}/{sp99} µs p50/p99"));
+        }
+        line.push_str(&format!("  {} dropped", self.dropped));
+        println!("{line}");
 
         self.updates = 0;
         self.bytes = 0;
-        self.fragments = 0;
         self.dropped = 0;
-        self.latencies.clear();
+        self.partial_latencies.clear();
+        self.full_latencies.clear();
+        self.source_latencies.clear();
         self.window_start = Instant::now();
     }
 
@@ -105,8 +135,6 @@ impl Stats {
             name = self.name,
             dur = dur_s,
             msgs = self.lifetime_updates,
-            mb = mb,
-            avg = avg,
             min = self.lifetime_latency_min,
             max = self.lifetime_latency_max,
             dropped = self.lifetime_dropped,
