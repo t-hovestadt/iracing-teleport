@@ -20,6 +20,15 @@ struct Args {
     /// Expect a direct unicast stream instead of multicast.
     #[arg(long)]
     unicast: bool,
+
+    /// Spin on the receive socket instead of sleeping. Burns one CPU core but
+    /// shaves ~500 µs of OS scheduler jitter off every frame.
+    #[arg(long)]
+    busy_wait: bool,
+
+    /// Pin the worker thread to a specific CPU core (0-based).
+    #[arg(long, value_name = "N")]
+    pin_core: Option<usize>,
 }
 
 fn main() {
@@ -36,7 +45,14 @@ fn main() {
     let mode = if args.unicast { "unicast" } else { "multicast" };
     println!("target ← {dest} ({mode})");
 
-    if let Err(e) = target::run(&args.bind, args.unicast, &args.group, rx) {
+    if let Err(e) = target::run(
+        &args.bind,
+        args.unicast,
+        &args.group,
+        args.busy_wait,
+        args.pin_core,
+        rx,
+    ) {
         eprintln!("error: {e}");
         std::process::exit(1);
     }

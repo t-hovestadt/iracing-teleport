@@ -1,6 +1,6 @@
 [package]
 name = "teleport"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 description = "Stream iRacing telemetry to a remote machine over UDP"
 
@@ -29,6 +29,7 @@ socket2 = { version = "0.5", features = ["all"] }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
+    "Win32_Media",
     "Win32_System_Memory",
     "Win32_System_Threading",
     "Win32_Security",
