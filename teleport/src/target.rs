@@ -4,7 +4,7 @@ use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use crate::platform::{boost_thread_priority, HighResTimer};
+use crate::platform::{boost_thread_priority, pin_thread_to_core, HighResTimer};
 use crate::protocol::{MAX_DATAGRAM_SIZE, Receiver as ProtoReceiver};
 use crate::stats::Stats;
 use crate::telemetry::{MAX_TELEMETRY_SIZE, Telemetry, TelemetryProvider};
@@ -15,10 +15,15 @@ pub fn run(
     bind: &str,
     unicast: bool,
     multicast_group: &str,
+    busy_wait: bool,
+    pin_core: Option<usize>,
     shutdown: mpsc::Receiver<()>,
 ) -> std::io::Result<()> {
     let _timer = HighResTimer::acquire();
     boost_thread_priority();
+    if let Some(core) = pin_core {
+        pin_thread_to_core(core);
+    }
 
     // Build the socket manually so we can set the receive buffer before binding.
     // A single frame arrives as a burst of ~23 × 9KB fragments (~207KB). The OS
@@ -31,7 +36,14 @@ pub fn run(
         .map_err(|e| std::io::Error::other(format!("invalid bind address: {e}")))?;
     sock.bind(&bind_addr.into())?;
     let socket: UdpSocket = sock.into();
-    socket.set_read_timeout(Some(Duration::from_secs(1)))?;
+    if busy_wait {
+        // Spin on recv_from. Burns one core but cuts ~500 µs of OS scheduler
+        // wake-up jitter off every frame.
+        socket.set_nonblocking(true)?;
+        println!("Busy-wait mode: target thread will burn one CPU core for lower latency.");
+    } else {
+        socket.set_read_timeout(Some(Duration::from_secs(1)))?;
+    }
     println!("Listening on {bind}");
 
     if !unicast {
@@ -48,21 +60,31 @@ pub fn run(
     let mut last_update = Instant::now();
     let mut stats = Stats::new("target");
     let mut seq_start: Option<Instant> = None;
+    // Guard: only write partial frames once we have established a full-map
+    // baseline. If we start up mid-session the source will send a full frame
+    // on the next sessionInfoUpdate tick; until then we discard partial frames.
+    let mut has_full_frame = false;
 
     loop {
         if shutdown.try_recv().is_ok() {
+            stats.print_summary();
             return Ok(());
         }
 
         match socket.recv_from(&mut recv_buf) {
             Ok((len, _src)) => {
-                let (assembled, new_seq) = proto.ingest(&recv_buf[..len]);
+                let res = proto.ingest(&recv_buf[..len]);
 
-                if new_seq {
+                if res.heartbeat {
+                    last_update = Instant::now();
+                    continue;
+                }
+
+                if res.new_seq {
                     seq_start = Some(Instant::now());
                 }
 
-                if let Some(compressed) = assembled {
+                if let Some(compressed) = res.assembled {
                     // Lazily create the local telemetry object the first time data arrives.
                     if telemetry.is_none() {
                         match Telemetry::create(MAX_TELEMETRY_SIZE) {
@@ -78,10 +100,33 @@ pub fn run(
                         }
                     }
 
-                    // Decompress directly into the mapped memory — zero extra allocation.
                     let t = telemetry.as_mut().unwrap();
-                    if let Err(e) = decompress_into(compressed, t.as_slice_mut()) {
-                        eprintln!("decompression failed: {e}");
+
+                    if res.buf_offset == u32::MAX {
+                        // Full-map frame — decompress the entire payload at offset 0.
+                        if let Err(e) = decompress_into(compressed, t.as_slice_mut()) {
+                            eprintln!("decompression failed (full frame): {e}");
+                            continue;
+                        }
+                        has_full_frame = true;
+                    } else if has_full_frame {
+                        // Partial frame — write only the active varBuf slice.
+                        let off = res.buf_offset as usize;
+                        match t.as_slice_mut().get_mut(off..) {
+                            Some(dest) => {
+                                if let Err(e) = decompress_into(compressed, dest) {
+                                    eprintln!("decompression failed (partial frame): {e}");
+                                    continue;
+                                }
+                            }
+                            None => {
+                                eprintln!("partial frame buf_offset {off} out of range, discarding");
+                                continue;
+                            }
+                        }
+                    } else {
+                        // Partial frame arrived before any full frame — discard.
+                        // Source will send a full frame on the next session-info tick.
                         continue;
                     }
 
@@ -109,8 +154,16 @@ pub fn run(
                 // Drop the telemetry map when we haven't heard from the source for a while.
                 if telemetry.is_some() && last_update.elapsed() >= STALE_TIMEOUT {
                     println!("No data for {}s — closing telemetry map.", STALE_TIMEOUT.as_secs());
+                    // Clear IRSDK_ST_CONNECTED before unmapping so SimHub sees
+                    // a clean disconnect rather than a stale status flag.
+                    if let Some(t) = telemetry.as_mut() {
+                        t.clear_status();
+                    }
                     telemetry = None;
+                    has_full_frame = false;
                 }
+                // In busy-wait mode the loop spins immediately; in blocking mode
+                // recv_from already slept up to its 1s timeout.
             }
 
             Err(e) => return Err(e),
