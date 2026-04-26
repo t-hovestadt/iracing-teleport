@@ -56,6 +56,10 @@ pub fn run(
 
     let mut recv_buf = [0u8; MAX_DATAGRAM_SIZE];
     let mut proto = ProtoReceiver::new(get_maximum_output_size(MAX_TELEMETRY_SIZE));
+    // Staging buffer for partial-frame decompression: the payload is
+    // irsdk_header (112 bytes) || varBuf data, written to two disjoint
+    // positions in the map, so it cannot be decompressed in-place.
+    let mut partial_staging = vec![0u8; MAX_TELEMETRY_SIZE];
     let mut telemetry: Option<Telemetry> = None;
     let mut last_update = Instant::now();
     let mut stats = Stats::new("target");
@@ -110,20 +114,30 @@ pub fn run(
                         }
                         has_full_frame = true;
                     } else if has_full_frame {
-                        // Partial frame — write only the active varBuf slice.
+                        // Partial frame — payload is irsdk_header (112 bytes) || varBuf data.
+                        // Source prepends the header so tickCounts stay current, preventing
+                        // SimHub from reading the wrong varBuf slot after a ring rotation.
+                        const HDR: usize = 112;
                         let off = res.buf_offset as usize;
-                        match t.as_slice_mut().get_mut(off..) {
-                            Some(dest) => {
-                                if let Err(e) = decompress_into(compressed, dest) {
-                                    eprintln!("decompression failed (partial frame): {e}");
-                                    continue;
-                                }
-                            }
-                            None => {
-                                eprintln!("partial frame buf_offset {off} out of range, discarding");
+                        let dec_len = match decompress_into(compressed, &mut partial_staging) {
+                            Ok(n) => n,
+                            Err(e) => {
+                                eprintln!("decompression failed (partial frame): {e}");
                                 continue;
                             }
+                        };
+                        if dec_len < HDR {
+                            eprintln!("partial frame decompressed to {dec_len} bytes, expected >{HDR}");
+                            continue;
                         }
+                        let var_len = dec_len - HDR;
+                        let map = t.as_slice_mut();
+                        if map.len() < HDR || off + var_len > map.len() {
+                            eprintln!("partial frame out of range (off={off} var_len={var_len}), discarding");
+                            continue;
+                        }
+                        map[..HDR].copy_from_slice(&partial_staging[..HDR]);
+                        map[off..off + var_len].copy_from_slice(&partial_staging[HDR..dec_len]);
                     } else {
                         // Partial frame arrived before any full frame — discard.
                         // Source will send a full frame on the next session-info tick.

@@ -110,7 +110,7 @@ frames send only the active variable buffer (~5–15 KB, 1 fragment).
 ## Behaviour
 
 - **source** waits indefinitely for iRacing to start. Once connected it prints the telemetry map size and starts streaming.
-- Each frame, source sends only the **active variable buffer** (~5–15 KB) rather than the full 1.1 MB map. A full frame is sent when the session changes (new track, car swap, etc.) or every 30 seconds, so a restarted target resyncs quickly without needing a session change.
+- Each frame, source sends only the **active variable buffer** (~5–15 KB) rather than the full 1.1 MB map. Every partial frame includes the current 112-byte irsdk header so that `tickCount` values stay accurate — iRacing rotates through a ring of 2–3 varBuf slots, and SimHub uses tickCounts to pick the right slot; stale counts would cause reads from the previous slot. A full frame is sent when the session changes (new track, car swap, etc.) or every 30 seconds, so a restarted target resyncs quickly without needing a session change.
 - **Heartbeats**: when iRacing is open but between sessions (menus, loading screens), source sends a small keep-alive packet every second so target keeps its shared-memory region alive for SimHub.
 - **target** creates its local shared-memory region the first time a complete frame arrives. If no data is received for 10 seconds the `IRSDK_ST_CONNECTED` status flag is cleared (so SimHub sees a clean disconnect) and the map is closed; it is recreated when data resumes.
 - If iRacing stops responding for 10 seconds, source drops the connection and waits to reconnect.
@@ -177,6 +177,7 @@ The receiver reassembles fragments out-of-order and discards duplicates. A new s
 This project started as a from-scratch reimplementation of [iracing-teleport](https://github.com/sklose/iracing-teleport). Key differences:
 
 - **Partial telemetry** — sends only the active iRacing variable buffer (~5–15 KB) per frame instead of the full 1.1 MB map, cutting latency from ~1.4 ms to ~200–500 µs on typical LAN.
+- **Accurate varBuf slot selection** — each partial frame includes the current 112-byte irsdk header so the target always has up-to-date `tickCount` values; without this, SimHub could silently read a one-frame-stale slot when iRacing rotates its ring buffer.
 - **Heartbeats** — keep-alive packets during menus and loading screens prevent SimHub from losing its telemetry connection between sessions.
 - **STATUS flag clear on disconnect** — zeros `IRSDK_ST_CONNECTED` before closing the target memory map so SimHub sees a clean disconnect rather than a stale "still connected" flag.
 - **Latency percentiles** — stats show p50/p99/max per window and lifetime min/avg/max on shutdown, instead of a simple average.
@@ -186,7 +187,7 @@ This project started as a from-scratch reimplementation of [iracing-teleport](ht
 - **OS socket buffers set to 2 MB** — the original used the OS default, which is smaller than a single full frame on Windows.
 - **Target address parsed once** — the original parsed a `&str` address inside the fragment loop.
 - **Pre-allocated compression buffer** — the original allocated a new `Vec` per frame.
-- **Zero-copy decompression** — the original decompressed into a temporary `Vec` then copied; we decompress directly into shared memory.
+- **Zero-copy decompression for full frames** — full frames decompress directly into shared memory; partial frames decompress to a small staging buffer then write header and varBuf separately.
 - **Separate `source.exe` and `target.exe`** — simpler to distribute; users only need the one relevant to their machine.
 - **Proper reconnect logic** — the original exited if iRacing hadn't started within 5 seconds; source now waits indefinitely using a typed `OpenResult` enum.
 - **Actual region size via `VirtualQuery`** — instead of a hardcoded constant.

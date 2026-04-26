@@ -78,6 +78,9 @@ pub fn run(
     let mut last_data = Instant::now();
     let mut last_heartbeat = Instant::now();
     let mut compress_buf = vec![0u8; get_maximum_output_size(MAX_TELEMETRY_SIZE)];
+    // Staging buffer for partial-frame payloads: irsdk header (112 bytes) prepended
+    // to the active varBuf data so the target always gets current tickCounts.
+    let mut partial_staging = vec![0u8; MAX_TELEMETRY_SIZE];
     // True once at least one telemetry frame has been received in the current connection.
     // Used to suppress log spam when iRacing is open but between sessions.
     let mut got_data = false;
@@ -164,7 +167,19 @@ pub fn run(
         };
 
         let data = telemetry.as_slice();
-        let payload = &data[payload_slice];
+
+        // For partial frames, prepend the 112-byte irsdk header so the target
+        // always writes current tickCounts. Without this, SimHub could read the
+        // wrong varBuf slot when iRacing rotates to a new ring position.
+        let payload: &[u8] = if buf_offset == u32::MAX {
+            &data[payload_slice]
+        } else {
+            const HDR: usize = 112;
+            let var_slice = &data[payload_slice];
+            partial_staging[..HDR].copy_from_slice(&data[..HDR]);
+            partial_staging[HDR..HDR + var_slice.len()].copy_from_slice(var_slice);
+            &partial_staging[..HDR + var_slice.len()]
+        };
 
         let compressed_len = match compress_into(payload, &mut compress_buf) {
             Ok(n) => n,
