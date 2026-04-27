@@ -29,9 +29,20 @@ struct Args {
     /// Pin the worker thread to a specific CPU core (0-based).
     #[arg(long, value_name = "N")]
     pin_core: Option<usize>,
+
+    /// Spawn a dummy iRacingSim64DX11.exe process so FanaLab detects iRacing
+    /// as running on this machine and auto-loads car profiles. The process is
+    /// started when an iRacing session is detected and killed when it drops.
+    #[arg(long)]
+    fanalab: bool,
 }
 
 fn main() {
+    // When spawned as a FanaLab compatibility stub, just sleep until killed.
+    if std::env::args().any(|a| a == "--fanalab-stub") {
+        loop { std::thread::sleep(std::time::Duration::from_secs(3600)); }
+    }
+
     let args = Args::parse();
 
     let (tx, rx) = mpsc::channel::<()>();
@@ -51,6 +62,7 @@ fn main() {
         &args.group,
         args.busy_wait,
         args.pin_core,
+        args.fanalab,
         rx,
     ) {
         eprintln!("error: {e}");

@@ -57,6 +57,7 @@ source.exe --unicast --target 192.168.1.50:5000
 | `--group <ADDR>` | | ✓ | `239.255.0.1` | Multicast group to join |
 | `--busy-wait` | | ✓ | off | Spin on recv instead of sleeping; lower jitter, costs one CPU core |
 | `--pin-core <N>` | ✓ | ✓ | off | Pin the worker thread to CPU core N (0-based) |
+| `--fanalab` | | ✓ | off | Spawn a dummy iRacingSim64DX11.exe so FanaLab detects iRacing and auto-loads per-car profiles |
 
 ---
 

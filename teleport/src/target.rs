@@ -13,12 +13,50 @@ const STALE_TIMEOUT: Duration = Duration::from_secs(10);
 // How often target retries a resync request to source when has_full_frame is false.
 const RESYNC_REQUEST_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Spawns a sleeping copy of this executable named `iRacingSim64DX11.exe` in the
+/// system temp directory so FanaLab finds the expected process and auto-loads car
+/// profiles. Killed automatically when dropped.
+struct FanalabStub(std::process::Child);
+
+impl FanalabStub {
+    fn spawn() -> Option<Self> {
+        let own_path = std::env::current_exe().ok()?;
+        let stub_path = std::env::temp_dir().join("iRacingSim64DX11.exe");
+        // Copy this executable to temp as iRacingSim64DX11.exe. If the file is
+        // locked (a leftover stub from a previous crash), try the existing copy.
+        if let Err(e) = std::fs::copy(&own_path, &stub_path) {
+            if !stub_path.exists() {
+                eprintln!("fanalab: could not create stub: {e}");
+                return None;
+            }
+        }
+        match std::process::Command::new(&stub_path).arg("--fanalab-stub").spawn() {
+            Ok(child) => {
+                println!("FanaLab compat: iRacingSim64DX11.exe running (pid {})", child.id());
+                Some(Self(child))
+            }
+            Err(e) => {
+                eprintln!("fanalab: failed to spawn stub: {e}");
+                None
+            }
+        }
+    }
+}
+
+impl Drop for FanalabStub {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        println!("FanaLab compat: iRacingSim64DX11.exe stopped");
+    }
+}
+
 pub fn run(
     bind: &str,
     unicast: bool,
     multicast_group: &str,
     busy_wait: bool,
     pin_core: Option<usize>,
+    fanalab: bool,
     shutdown: mpsc::Receiver<()>,
 ) -> std::io::Result<()> {
     let _timer = HighResTimer::acquire();
@@ -72,9 +110,12 @@ pub fn run(
     // Source address learned from recv_from; used to send resync requests.
     let mut source_addr: Option<std::net::SocketAddr> = None;
     let mut last_resync_request = Instant::now() - RESYNC_REQUEST_INTERVAL;
+    // FanaLab compat: dummy process that makes FanaLab think iRacing is running.
+    let mut fanalab_stub: Option<FanalabStub> = None;
 
     loop {
         if shutdown.try_recv().is_ok() {
+            drop(fanalab_stub.take());
             stats.print_summary();
             return Ok(());
         }
@@ -126,6 +167,11 @@ pub fn run(
                             }
                             has_full_frame = true;
                             wrote = true;
+                            // Spawn FanaLab compat stub on the first session-info frame so
+                            // FanaLab sees iRacingSim64DX11.exe and loads car profiles.
+                            if fanalab && fanalab_stub.is_none() {
+                                fanalab_stub = FanalabStub::spawn();
+                            }
                         } else if has_full_frame {
                             // Partial frame — payload is irsdk_header (112 bytes) || varBuf data.
                             // Source prepends the header so tickCounts stay current, preventing
@@ -198,7 +244,7 @@ pub fn run(
             {
                 // Drop the telemetry map when we haven't heard from the source for a while.
                 if telemetry.is_some() && last_update.elapsed() >= STALE_TIMEOUT {
-                    println!("No data for {}s — closing telemetry map.", STALE_TIMEOUT.as_secs());
+                    println!("No data for {}s, closing telemetry map.", STALE_TIMEOUT.as_secs());
                     // Clear IRSDK_ST_CONNECTED before unmapping so SimHub sees
                     // a clean disconnect rather than a stale status flag.
                     if let Some(t) = telemetry.as_mut() {
@@ -207,6 +253,7 @@ pub fn run(
                     telemetry = None;
                     has_full_frame = false;
                     source_addr = None;
+                    fanalab_stub = None;
                 }
                 // In busy-wait mode the loop spins immediately; in blocking mode
                 // recv_from already slept up to its 1s timeout.

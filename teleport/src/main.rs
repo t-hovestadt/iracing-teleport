@@ -57,10 +57,20 @@ enum Command {
         /// Pin the worker thread to a specific CPU core (0-based).
         #[arg(long, value_name = "N")]
         pin_core: Option<usize>,
+
+        /// Spawn a dummy iRacingSim64DX11.exe process so FanaLab detects iRacing
+        /// as running on this machine and auto-loads car profiles.
+        #[arg(long)]
+        fanalab: bool,
     },
 }
 
 fn main() {
+    // When spawned as a FanaLab compatibility stub, just sleep until killed.
+    if std::env::args().any(|a| a == "--fanalab-stub") {
+        loop { std::thread::sleep(std::time::Duration::from_secs(3600)); }
+    }
+
     let cli = Cli::parse();
 
     let (tx, rx) = mpsc::channel::<()>();
@@ -76,11 +86,11 @@ fn main() {
             println!("source → {target} ({mode})");
             source::run(&bind, &target, unicast, pin_core, rx)
         }
-        Command::Target { bind, group, unicast, busy_wait, pin_core } => {
+        Command::Target { bind, group, unicast, busy_wait, pin_core, fanalab } => {
             let dest = if unicast { "unicast" } else { group.as_str() };
             let mode = if unicast { "unicast" } else { "multicast" };
             println!("target ← {dest} ({mode})");
-            target::run(&bind, unicast, &group, busy_wait, pin_core, rx)
+            target::run(&bind, unicast, &group, busy_wait, pin_core, fanalab, rx)
         }
     };
 
