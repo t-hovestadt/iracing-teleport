@@ -72,6 +72,33 @@ Both tools print a stats line every 5 s (`60 msg/s  0.48 Mbps  200/280/340 µs p
 
 ---
 
+## Compatible apps
+
+Any app that reads iRacing shared memory works automatically on the target machine — the memory map is identical to what iRacing produces locally. No extra configuration needed in the app.
+
+**Dashboards and overlays**
+- [SimHub](https://www.simhubdash.com) — dashboards, overlays, haptics, LED control
+- [RaceLab](https://racelab.app) — modern overlay suite
+- [iOverlay](https://ioverlay.app) — standings and timing overlays
+- [Z1 Dashboard](https://www.z1racetech.com) — live telemetry display and lap analysis
+- [SDK Gaming](https://www.sdk-gaming.co.uk) — HUD and live timing overlays
+
+**Haptics and bass shakers**
+- [Track Impulse](https://track-impulse.com) — dedicated haptic engine, reads iRacing's 360 Hz sub-samples for higher resolution shaker output
+- [ButtKicker HaptiConnect](https://thebuttkicker.com) — haptic feedback using suspension, engine, and track surface data
+- [irFFB](https://github.com/nlp80/irFFB) — FFB enhancement using 360 Hz telemetry; also supports seat shakers
+
+**Wheel hardware**
+- [FanaLab](https://fanatec.com/fanalab) — per-car profiles for Fanatec wheels (use `--fanalab` flag)
+- [FanaBridge](https://github.com/kelchm/FanaBridge) — SimHub plugin for Fanatec LED and display control
+
+**Spotter and coaching**
+- [Crew Chief](https://thecrewchief.org) — AI spotter and engineer with voice feedback
+- [VRS](https://virtualracingschool.com) — professional coaching overlays with reference lap comparison
+- [Trophi.ai](https://trophi.ai) — AI real-time voice coaching
+
+---
+
 ## Building from source
 
 Requires [Rust](https://rustup.rs) (stable).
