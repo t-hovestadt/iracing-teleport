@@ -197,6 +197,10 @@ pub fn run(
                         // else: partial before session-info — fall through to resync request below.
 
                         if wrote {
+                            // Always signal — both session-info and partial frames call SetEvent.
+                            // Withholding SetEvent from session-info frames does NOT prevent the
+                            // race: SimHub polls irsdk_header.status independently of the event.
+                            // See source.rs "SimHub activation invariant" for full analysis.
                             if let Err(e) = t.signal_data_ready() {
                                 eprintln!("signal_data_ready failed: {e}");
                             }
