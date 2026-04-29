@@ -205,6 +205,7 @@ The receiver reassembles fragments out-of-order and discards duplicates. A new s
 - **Session-info frames**: sent on session changes, on target resync request, and every 10 s as a fallback. These send the **full** ~1.1 MB map (compressed to ~200–300 KB, ~20 fragments). The full map is required because SimHub detects iRacing via two independent mechanisms: `WaitForSingleObject` on the data event *and* direct polling of `irsdk_header.status` on its own timer. If only a static prefix is sent, there is a ~16 ms window where `status=1` is visible but `varBuf` is still zero; SimHub's poll fires, sees bad data, enters a retry back-off, and stops responding to the event — resulting in "waiting for data" indefinitely, most reliably on low-jitter connections like direct Ethernet.
 - **Bidirectional resync**: target sends a 1-byte UDP packet to source when it needs a session-info frame; source responds on the next tick instead of waiting for the 10 s fallback. Requires source to bind to a known port (not ephemeral `:0`) so the request passes through the firewall — see [Direct Ethernet setup](#direct-ethernet-setup).
 - **2 MB socket buffers** on both sides (via `socket2`) — the OS default of 64 KB drops all but the first 7 fragments of a session-info frame.
+- **Receiver bounds validation** — datagram headers are checked before any buffer allocation: `fragments` is capped at 256 and `payload_size` at the pre-allocated maximum. A malformed or spoofed packet on the LAN is silently discarded rather than triggering an out-of-memory crash.
 - **Zero-allocation hot path** — compression writes into a pre-allocated buffer; decompression writes directly into the mapped memory region.
 - **1 ms timer resolution** — source and target call `timeBeginPeriod(1)` so Windows sleep and event waits resolve at 1 ms granularity rather than the default 15.6 ms.
 - **MMCSS on target** — registers under the Windows "Games" multimedia task for reserved CPU time and lower jitter. Not applied to source to avoid competing with iRacing's own registrations.
@@ -230,8 +231,9 @@ Rewritten from scratch based on [sklose/iracing-teleport](https://github.com/skl
 - `IRSDK_ST_CONNECTED` is zeroed before closing the target map so SimHub sees a clean disconnect.
 - Stats show p50/p99/max latency per window with end-to-end measurement (source processing + network transit).
 - Socket buffers set to 2 MB on both sides; the original used the OS default, which is smaller than one full frame.
-- `repr(C, packed)` wire header with a compile-time size assertion; the original's `repr(C)` added 4 bytes of trailing padding.
+- `repr(C, packed)` wire header with compile-time size and layout assertions; the original's `repr(C)` added 4 bytes of trailing padding.
 - Receive path uses `ptr::read_unaligned`; reading a packed struct through a reference is undefined behaviour when unaligned.
+- Receiver validates datagram header bounds before allocating — `fragments` and `payload_size` are capped so a malformed packet cannot cause an out-of-memory crash.
 - Pre-allocated compression buffer; the original allocated a new `Vec` per frame.
 - source waits indefinitely for iRacing to start; the original exited after 5 seconds.
 - Shared memory region size read via `VirtualQuery` rather than a hardcoded constant.
