@@ -1,9 +1,6 @@
 use clap::{Parser, Subcommand};
-use teleport::{source, target};
+use teleport::{source, target, DEFAULT_MULTICAST, DEFAULT_PORT};
 use std::sync::mpsc;
-
-const DEFAULT_MULTICAST: &str = "239.255.0.1";
-const DEFAULT_PORT: u16 = 5000;
 
 /// Stream iRacing telemetry over the network so SimHub (or any iRacing-compatible
 /// app) can run on a different machine than your iRacing installation.
@@ -66,9 +63,9 @@ enum Command {
 }
 
 fn main() {
-    // When spawned as a FanaLab compatibility stub, just sleep until killed.
+    // When spawned as a FanaLab compatibility stub, just park until killed.
     if std::env::args().any(|a| a == "--fanalab-stub") {
-        loop { std::thread::sleep(std::time::Duration::from_secs(3600)); }
+        loop { std::thread::park(); }
     }
 
     let cli = Cli::parse();
