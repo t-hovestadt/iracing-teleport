@@ -150,17 +150,12 @@ pub fn run(
 
                         let t = telemetry.as_mut().unwrap();
                         let mut wrote = false;
-                        // signal controls whether we notify SimHub via SetEvent.
-                        // Session-info frames write the static prefix (header + var headers +
-                        // session YAML) but do NOT signal yet — the varBuf region is still zero.
-                        // The next partial frame fills varBuf AND sets signal=true, so SimHub
-                        // always sees a fully-populated map on the very first notification.
-                        let mut signal = false;
 
                         if res.buf_offset == u32::MAX {
-                            // Session-info frame — decompress static prefix at offset 0.
-                            // varBuf area is kept current by partial frames; we do NOT
-                            // signal SimHub here (signal stays false).
+                            // Session-info frame — decompress the full map at offset 0.
+                            // Sending the full map (not just the static prefix) ensures varBuf
+                            // is populated at the same moment status=1 becomes visible, so
+                            // SimHub never sees status=1 with zero telemetry values.
                             if let Err(e) = decompress_into(compressed, t.as_slice_mut()) {
                                 eprintln!("decompression failed (session-info frame): {e}");
                                 continue;
@@ -176,7 +171,6 @@ pub fn run(
                             // Partial frame — payload is irsdk_header (112 bytes) || varBuf data.
                             // Source prepends the header so tickCounts stay current, preventing
                             // SimHub from reading the wrong varBuf slot after a ring rotation.
-                            // varBuf is now populated — safe to signal SimHub.
                             const HDR: usize = 112;
                             let off = res.buf_offset as usize;
                             let dec_len = match decompress_into(compressed, &mut partial_staging) {
@@ -199,15 +193,12 @@ pub fn run(
                             map[..HDR].copy_from_slice(&partial_staging[..HDR]);
                             map[off..off + var_len].copy_from_slice(&partial_staging[HDR..dec_len]);
                             wrote = true;
-                            signal = true;
                         }
                         // else: partial before session-info — fall through to resync request below.
 
                         if wrote {
-                            if signal {
-                                if let Err(e) = t.signal_data_ready() {
-                                    eprintln!("signal_data_ready failed: {e}");
-                                }
+                            if let Err(e) = t.signal_data_ready() {
+                                eprintln!("signal_data_ready failed: {e}");
                             }
 
                             // Compute end-to-end latency: source processing + network transit.

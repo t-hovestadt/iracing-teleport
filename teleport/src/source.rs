@@ -19,23 +19,6 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 // connect while still being negligible overhead during normal racing.
 const FULL_FRAME_INTERVAL: Duration = Duration::from_secs(10);
 
-/// Returns the byte offset just past the end of the irsdk session-info YAML blob.
-/// Session-info frames send only this static prefix (header + variable headers +
-/// session YAML, ~150–250 KB) rather than the full 1.1 MB map. The varBuf region
-/// is kept current by the per-tick partial frames. Target delays the SimHub signal
-/// until after the first partial frame so SimHub always sees a fully-populated map.
-/// Falls back to `data.len()` if the offsets look invalid.
-fn session_info_end(data: &[u8]) -> usize {
-    fn read_i32(data: &[u8], offset: usize) -> Option<i32> {
-        data.get(offset..offset + 4)
-            .and_then(|s| s.try_into().ok())
-            .map(i32::from_le_bytes)
-    }
-    let info_offset = read_i32(data, 20).unwrap_or(0) as usize;
-    let info_len   = read_i32(data, 16).unwrap_or(0) as usize;
-    let end = info_offset.saturating_add(info_len);
-    if end > 112 && end <= data.len() { end } else { data.len() }
-}
 
 pub fn run(
     bind: &str,
@@ -200,13 +183,13 @@ pub fn run(
                 last_session_update = session_update;
                 last_full_frame = Instant::now();
                 pending_resync = false;
-                (u32::MAX, 0..session_info_end(data))
+                (u32::MAX, 0..data.len())
             } else if let Some((off, len)) = telemetry.active_var_buf() {
                 (off as u32, off..off + len)
             } else {
                 last_full_frame = Instant::now();
                 pending_resync = false;
-                (u32::MAX, 0..session_info_end(data))
+                (u32::MAX, 0..data.len())
             }
         };
 
