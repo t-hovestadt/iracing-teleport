@@ -20,6 +20,30 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 const FULL_FRAME_INTERVAL: Duration = Duration::from_secs(10);
 
 
+/// Returns the byte offset where the variable data region begins —
+/// `min(varBuf[i].bufOffset)` for all active buffers. This is the end of the
+/// static prefix (irsdk header + var descriptors + session YAML).
+/// Falls back to `data.len()` if the header is missing or malformed.
+fn session_info_end(data: &[u8]) -> usize {
+    if data.len() < IRSDK_HEADER_SIZE { return data.len(); }
+    let num_buf = (i32::from_le_bytes(
+        data[32..36].try_into().unwrap_or([0; 4])
+    ) as usize).min(4);
+    if num_buf == 0 { return data.len(); }
+    let mut min_off = data.len();
+    for i in 0..num_buf {
+        let b = 48 + i * 16;
+        if b + 8 > data.len() { return data.len(); }
+        let off = i32::from_le_bytes(
+            data[b + 4..b + 8].try_into().unwrap_or([0; 4])
+        ) as usize;
+        if off > IRSDK_HEADER_SIZE && off < data.len() {
+            min_off = min_off.min(off);
+        }
+    }
+    min_off
+}
+
 pub fn run(
     bind: &str,
     target: &str,
@@ -174,23 +198,25 @@ pub fn run(
 
             // ── SimHub activation invariant ──────────────────────────────────────
             // SimHub detects iRacing via two independent mechanisms:
-            //   1. WaitForSingleObject on Local\IRSDKDataValidEvent — fires when
-            //      target calls signal_data_ready().
-            //   2. Direct polling of irsdk_header.status on its own timer —
-            //      fires regardless of SetEvent.
+            //   1. WaitForSingleObject on Local\IRSDKDataValidEvent
+            //   2. Direct polling of irsdk_header.status on its own timer
             //
-            // If the poll fires while status=1 but varBuf is zero, SimHub
-            // decides iRacing is not running and enters a retry back-off,
-            // ignoring subsequent SetEvent signals until the timer expires.
-            // Therefore session-info frames MUST send the full map (0..data.len())
-            // so varBuf is non-zero at the moment status=1 first becomes visible.
+            // The invariant: status=1 must only become visible AFTER varBuf data
+            // is already written to the shared map.
             //
-            // DO NOT optimise session-info frames to send only a static prefix
-            // (e.g. via session_info_end()). This has been attempted twice and
-            // broke SimHub both times:
-            //   4e1a197  introduced prefix-only send  →  bc2bd98 reverted it
-            //   ed7af31  re-introduced with "delay SetEvent" workaround
-            //            →  48a4714 reverted it again
+            // How this is enforced (write-ordering approach):
+            //   Session-info frames: bytes [4..8] (status) are zeroed before
+            //     compressing. Target copies to map skipping [4..8], so status
+            //     stays 0 (or preserved at 1 for session updates — varBuf from
+            //     the previous tick is still valid).
+            //   Partial frames: target writes varBuf FIRST, then irsdk header
+            //     LAST. The header contains status=1 from iRacing's live data;
+            //     writing it after varBuf means status=1 is visible only once
+            //     varBuf is already in place.
+            //
+            // History of failed optimisations (both wrote status=1 before varBuf):
+            //   4e1a197  prefix-only session-info, no status zeroing → bc2bd98 reverted
+            //   ed7af31  prefix-only + withhold SetEvent workaround  → 48a4714 reverted
             // ─────────────────────────────────────────────────────────────────
             if session_update != last_session_update || force_full {
                 last_session_update = session_update;
@@ -208,11 +234,19 @@ pub fn run(
 
         let data = telemetry.as_slice();
 
-        // For partial frames, prepend the irsdk header so the target always writes
+        // Session-info frames send only the static prefix (header + var descriptors
+        // + session YAML) with the status field zeroed. The target copies this to
+        // the map skipping [4..8] so status stays 0 until the first partial frame
+        // writes varBuf and then the header (status=1) — see invariant comment above.
+        //
+        // Partial frames prepend the irsdk header so the target always writes
         // current tickCounts. Without this, SimHub could read the wrong varBuf slot
         // when iRacing rotates to a new ring position.
         let payload: &[u8] = if buf_offset == u32::MAX {
-            &data[payload_slice]
+            let prefix_end = session_info_end(data);
+            partial_staging[..prefix_end].copy_from_slice(&data[..prefix_end]);
+            partial_staging[4..8].copy_from_slice(&[0u8; 4]); // zero status — target skips [4..8]
+            &partial_staging[..prefix_end]
         } else {
             let var_slice = &data[payload_slice];
             partial_staging[..IRSDK_HEADER_SIZE].copy_from_slice(&data[..IRSDK_HEADER_SIZE]);

@@ -152,14 +152,27 @@ pub fn run(
                         let mut wrote = false;
 
                         if res.buf_offset == u32::MAX {
-                            // Session-info frame — decompress the full map at offset 0.
-                            // Sending the full map (not just the static prefix) ensures varBuf
-                            // is populated at the same moment status=1 becomes visible, so
-                            // SimHub never sees status=1 with zero telemetry values.
-                            if let Err(e) = decompress_into(compressed, t.as_slice_mut()) {
-                                eprintln!("decompression failed (session-info frame): {e}");
+                            // Session-info frame: decompress prefix into staging, then copy to
+                            // map SKIPPING bytes [4..8] (the status field). Preserving status
+                            // at 0 (fresh map) or 1 (ongoing session) means SimHub can never
+                            // see status=1 from a session-info frame before varBuf is populated.
+                            // status=1 is written by the partial frame handler below, after varBuf.
+                            let prefix_len = match decompress_into(compressed, &mut partial_staging) {
+                                Ok(n) => n,
+                                Err(e) => {
+                                    eprintln!("decompression failed (session-info frame): {e}");
+                                    continue;
+                                }
+                            };
+                            if prefix_len < 8 {
+                                eprintln!("session-info frame too short ({prefix_len} bytes), discarding");
                                 continue;
                             }
+                            let map = t.as_slice_mut();
+                            let n = prefix_len.min(map.len());
+                            map[..4].copy_from_slice(&partial_staging[..4]);       // pre-status bytes
+                            // [4..8] intentionally skipped — preserve existing status value
+                            if n > 8 { map[8..n].copy_from_slice(&partial_staging[8..n]); }
                             has_full_frame = true;
                             wrote = true;
                             // Spawn FanaLab compat stub on the first session-info frame so
@@ -169,8 +182,10 @@ pub fn run(
                             }
                         } else if has_full_frame {
                             // Partial frame — payload is irsdk_header || varBuf data.
-                            // Source prepends the header so tickCounts stay current, preventing
-                            // SimHub from reading the wrong varBuf slot after a ring rotation.
+                            // Write order: varBuf FIRST, then irsdk header LAST.
+                            // The header contains status=1 from iRacing's live data; writing it
+                            // after varBuf means status=1 becomes visible only once varBuf is
+                            // already in place — see source.rs "SimHub activation invariant".
                             let off = res.buf_offset as usize;
                             let dec_len = match decompress_into(compressed, &mut partial_staging) {
                                 Ok(n) => n,
@@ -189,16 +204,18 @@ pub fn run(
                                 eprintln!("partial frame out of range (off={off} var_len={var_len}), discarding");
                                 continue;
                             }
-                            map[..IRSDK_HEADER_SIZE].copy_from_slice(&partial_staging[..IRSDK_HEADER_SIZE]);
+                            // varBuf written first — status still 0 (fresh) or 1 (ongoing).
                             map[off..off + var_len].copy_from_slice(&partial_staging[IRSDK_HEADER_SIZE..dec_len]);
+                            // Header written last — sets status=1 only after varBuf is in place.
+                            map[..IRSDK_HEADER_SIZE].copy_from_slice(&partial_staging[..IRSDK_HEADER_SIZE]);
                             wrote = true;
                         }
                         // else: partial before session-info — fall through to resync request below.
 
                         if wrote {
-                            // Always signal — both session-info and partial frames call SetEvent.
-                            // Withholding SetEvent from session-info frames does NOT prevent the
-                            // race: SimHub polls irsdk_header.status independently of the event.
+                            // Signal on every write. For partial frames this fires after
+                            // status=1 is written (header last), so SimHub's WaitForSingleObject
+                            // path also sees a fully-populated map.
                             // See source.rs "SimHub activation invariant" for full analysis.
                             if let Err(e) = t.signal_data_ready() {
                                 eprintln!("signal_data_ready failed: {e}");
