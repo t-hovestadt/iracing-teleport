@@ -179,6 +179,26 @@ pub fn run(
                 .map(i32::from_le_bytes)
                 .unwrap_or(0);
 
+            // ── SimHub activation invariant ──────────────────────────────────────
+            // SimHub detects iRacing via two independent mechanisms:
+            //   1. WaitForSingleObject on Local\IRSDKDataValidEvent — fires when
+            //      target calls signal_data_ready().
+            //   2. Direct polling of irsdk_header.status on its own timer —
+            //      fires regardless of SetEvent.
+            //
+            // If the poll fires while status=1 but varBuf is zero, SimHub
+            // decides iRacing is not running and enters a retry back-off,
+            // ignoring subsequent SetEvent signals until the timer expires.
+            // Therefore session-info frames MUST send the full map (0..data.len())
+            // so varBuf is non-zero at the moment status=1 first becomes visible.
+            //
+            // DO NOT optimise session-info frames to send only a static prefix
+            // (e.g. via session_info_end()). This has been attempted twice and
+            // broke SimHub both times:
+            //   4e1a197  introduced prefix-only send  →  bc2bd98 reverted it
+            //   ed7af31  re-introduced with "delay SetEvent" workaround
+            //            →  48a4714 reverted it again
+            // ─────────────────────────────────────────────────────────────────
             if session_update != last_session_update || force_full {
                 last_session_update = session_update;
                 last_full_frame = Instant::now();
