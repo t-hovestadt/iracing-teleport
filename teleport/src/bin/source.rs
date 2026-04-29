@@ -1,9 +1,6 @@
 use clap::Parser;
 use std::sync::mpsc;
-use teleport::source;
-
-const DEFAULT_MULTICAST: &str = "239.255.0.1";
-const DEFAULT_PORT: u16 = 5000;
+use teleport::{source, DEFAULT_MULTICAST, DEFAULT_PORT};
 
 /// Read iRacing telemetry and broadcast it over UDP to a SimHub PC.
 #[derive(Parser)]

@@ -277,6 +277,26 @@ impl Receiver {
 mod tests {
     use super::*;
 
+    /// Build a raw datagram with arbitrary header fields, bypassing Sender
+    /// validation. Used to test receiver behaviour on malformed input.
+    fn make_datagram(sequence: u32, fragments: u16, payload_size: u32, fragment_idx: u16, data: &[u8]) -> Vec<u8> {
+        let hdr = Header {
+            source_us: 0,
+            sequence,
+            payload_size,
+            buf_offset: u32::MAX,
+            fragment: fragment_idx,
+            fragments,
+        };
+        let mut buf = vec![0u8; HEADER_SIZE + data.len()];
+        let hdr_bytes = unsafe {
+            std::slice::from_raw_parts(&hdr as *const _ as *const u8, HEADER_SIZE)
+        };
+        buf[..HEADER_SIZE].copy_from_slice(hdr_bytes);
+        buf[HEADER_SIZE..].copy_from_slice(data);
+        buf
+    }
+
     fn round_trip(payload: &[u8]) -> Vec<u8> {
         let mut sender = Sender::new();
         let mut datagrams = Vec::new();
@@ -356,5 +376,56 @@ mod tests {
         let mut receiver = Receiver::new(1024);
         receiver.ingest(&datagrams[0]);
         assert_eq!(receiver.last_source_us, 9999);
+    }
+
+    // ── Bounds-check tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn rejects_oversized_fragment_count() {
+        let mut receiver = Receiver::new(1024);
+        // fragments = MAX_FRAGMENTS + 1 should be rejected without allocating.
+        let dg = make_datagram(1, MAX_FRAGMENTS + 1, 100, 0, &[0u8; 100]);
+        assert!(receiver.ingest(&dg).assembled.is_none());
+        // Subsequent fragments for the same sequence are also discarded.
+        let dg2 = make_datagram(1, MAX_FRAGMENTS + 1, 100, 1, &[0u8; 100]);
+        assert!(receiver.ingest(&dg2).assembled.is_none());
+    }
+
+    #[test]
+    fn rejects_oversized_payload_size() {
+        let max_payload = 1024usize;
+        let mut receiver = Receiver::new(max_payload);
+        // payload_size = max_payload + 1 should be rejected.
+        let dg = make_datagram(1, 1, (max_payload + 1) as u32, 0, &[0u8; 10]);
+        assert!(receiver.ingest(&dg).assembled.is_none());
+    }
+
+    #[test]
+    fn valid_frame_after_rejected_malformed() {
+        let payload: Vec<u8> = (0..200).map(|i| (i % 251) as u8).collect();
+        let max_payload = payload.len() + MAX_PAYLOAD_PER_DATAGRAM;
+        let mut receiver = Receiver::new(max_payload);
+
+        // Malformed packet on sequence 99 — distinct from Sender's starting sequence 0.
+        let bad = make_datagram(99, MAX_FRAGMENTS + 1, 100, 0, &[0u8; 10]);
+        assert!(receiver.ingest(&bad).assembled.is_none());
+
+        // Valid frame on sequence 0 should assemble cleanly despite the prior rejection.
+        let mut sender = Sender::new();
+        let mut datagrams = Vec::new();
+        sender
+            .send(&payload, 0, u32::MAX, |d| {
+                datagrams.push(d.to_vec());
+                Ok(())
+            })
+            .unwrap();
+
+        let mut assembled = None;
+        for dg in &datagrams {
+            if let Some(out) = receiver.ingest(dg).assembled {
+                assembled = Some(out.to_vec());
+            }
+        }
+        assert_eq!(assembled.unwrap(), payload);
     }
 }
