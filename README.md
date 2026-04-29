@@ -69,7 +69,7 @@ See the [Direct Ethernet setup](#direct-ethernet-setup) section below.
 
 - **source** maps the iRacing shared memory region, compresses each frame with LZ4, and sends it over UDP. It waits indefinitely for iRacing to start and reconnects automatically if iRacing closes.
 - **Each tick** sends only the ~5–15 KB variable buffer slice that actually changed, keeping per-frame bandwidth to ~0.5–1 Mbps at 60 Hz.
-- **Session-info frames** (sent on session changes, on target resync, and every 10 s as a fallback) send the static prefix — irsdk header + variable descriptors + session YAML — compressed to ~60–150 KB. The status field is zeroed in the prefix; target writes varBuf first then the irsdk header on every partial frame, so `status=1` is never visible before varBuf is populated. See [Technical details](#technical-details) for the full analysis.
+- **Session-info frames** (sent on session changes, on target resync, and every 10 s as a fallback) send the static prefix — irsdk header + variable descriptors + session YAML — compressed to ~60–150 KB. The status field is zeroed in the prefix; target writes varBuf first then the irsdk header on every partial frame, so `status=1` is never visible before varBuf is populated.
 - **target** receives, reassembles, and decompresses the data into a matching shared memory region on the SimHub PC, so SimHub sees iRacing as running locally. The map is created on first data arrival and closed cleanly if no data is received for 10 s.
 - Heartbeat packets keep the connection alive across loading screens and menus so SimHub doesn't disconnect mid-session.
 
@@ -79,7 +79,7 @@ Both tools print a stats line every 5 s (`60 msg/s  0.48 Mbps  200/280/340 µs p
 
 ## Compatible apps
 
-Any app that reads iRacing shared memory works automatically on the target machine — the memory map is identical to what iRacing produces locally. No extra configuration needed in the app.
+Any app that reads iRacing shared memory works automatically on the target machine — the memory map is identical to what iRacing produces locally.
 
 **Dashboards and overlays**
 - [SimHub](https://www.simhubdash.com) — dashboards, overlays, haptics, LED control
@@ -201,12 +201,12 @@ The receiver reassembles fragments out-of-order and discards duplicates. A new s
 
 ### Performance design
 
-- **Partial frames**: iRacing's header exposes a ring of up to 4 variable buffers (~5–15 KB each). source reads the highest-tick slot each frame and sends only that slice, cutting per-frame data from ~1.1 MB to ~5–15 KB and fragment count from ~23 to 1. Each partial frame also includes the current 112-byte irsdk header so target always has up-to-date `tickCount` values; without this, SimHub can silently read a stale varBuf slot when iRacing rotates its ring.
-- **Session-info frames**: sent on session changes, on target resync request, and every 10 s as a fallback. These send only the **static prefix** — irsdk header + variable descriptors + session YAML — compressed to ~60–150 KB (~7–17 fragments, down from ~20+ for the full map). The `status` field (bytes [4..8]) is zeroed before compressing. On the target, the prefix is written to the map skipping bytes [4..8], so the map's status stays at 0 (fresh) or its previous value (session update). `status=1` is written exclusively by the **partial frame handler**, after varBuf data is already in place — see write ordering below. This eliminates the window where SimHub's independent `irsdk_header.status` poll could see `status=1` with empty telemetry values and enter a retry back-off.
-- **Write ordering on partial frames**: target writes varBuf data first, then the irsdk header last. The irsdk header contains `status=1` from iRacing's live data; by writing it after varBuf, `status=1` is visible only once the variable data is already in place. Combined with the zeroed status in session-info frames, SimHub's independent status poll can never observe `status=1` with zero telemetry values.
+- **Partial frames**: iRacing's header exposes a ring of up to 4 variable buffers (~5–15 KB each). source reads the highest-tick slot each frame and sends only that slice, cutting per-frame data from ~1.1 MB to ~5–15 KB and fragment count from ~23 to 1. Each partial frame includes the 112-byte irsdk header so target has current `tickCount` values and picks the right varBuf slot after a ring rotation.
+- **Session-info frames**: sent on session changes, on target resync request, and every 10 s as a fallback. These send only the **static prefix** — irsdk header + variable descriptors + session YAML — compressed to ~60–150 KB (~7–17 fragments, down from ~20+ for the full map). The `status` field (bytes [4..8]) is zeroed before compressing. On the target, the prefix is written to the map skipping bytes [4..8], so the map's status stays at 0 (fresh) or its previous value (session update). `status=1` is written exclusively by the **partial frame handler**, after varBuf data is already in place.
+- **Write ordering on partial frames**: target writes varBuf data first, then the irsdk header last. The irsdk header contains `status=1` from iRacing's live data; writing it after varBuf means `status=1` is visible only once the variable data is already in place.
 - **Bidirectional resync**: target sends a 1-byte UDP packet to source when it needs a session-info frame; source responds on the next tick instead of waiting for the 10 s fallback. Requires source to bind to a known port (not ephemeral `:0`) so the request passes through the firewall — see [Direct Ethernet setup](#direct-ethernet-setup).
 - **2 MB socket buffers** on both sides (via `socket2`) — the OS default of 64 KB drops all but the first 7 fragments of a session-info frame.
-- **Receiver bounds validation** — datagram headers are checked before any buffer allocation: `fragments` is capped at 256 and `payload_size` at the pre-allocated maximum. A malformed or spoofed packet on the LAN is silently discarded rather than triggering an out-of-memory crash.
+- **Receiver bounds validation** — datagram headers are checked before any buffer allocation: `fragments` is capped at 256 and `payload_size` at the pre-allocated maximum. A malformed or spoofed packet on the LAN is silently discarded.
 - **Zero-allocation hot path** — compression and decompression write into pre-allocated buffers; no heap allocation per frame.
 - **1 ms timer resolution** — source and target call `timeBeginPeriod(1)` so Windows sleep and event waits resolve at 1 ms granularity rather than the default 15.6 ms.
 - **MMCSS on target** — registers under the Windows "Games" multimedia task for reserved CPU time and lower jitter. Not applied to source to avoid competing with iRacing's own registrations.
@@ -222,13 +222,13 @@ Release profile uses LTO and a single codegen unit.
 Rewritten from scratch based on [sklose/iracing-teleport](https://github.com/sklose/iracing-teleport). Main differences:
 
 - **Partial frames**: sends only the active variable buffer (~5–15 KB) per frame instead of the full 1.1 MB map; latency drops from ~1.4 ms to ~200–500 µs on a typical LAN, ~9 µs on a direct Ethernet link.
-- Each partial frame includes the current 112-byte irsdk header so target always has up-to-date `tickCount` values. Without this, SimHub can silently read a stale varBuf slot when iRacing rotates its ring buffer.
+- Each partial frame includes the 112-byte irsdk header so target has current `tickCount` values and picks the right varBuf slot after a ring rotation.
 - Session-info frames send only the static prefix (~60–150 KB compressed) with `status` zeroed; partial frames write varBuf first then the irsdk header last. `status=1` only becomes visible after varBuf is populated, so SimHub's independent `irsdk_header.status` poll never sees `status=1` with empty telemetry values.
 - **Bidirectional resync**: target sends a 1-byte UDP packet to source when it needs a session-info frame; source responds on the next tick instead of waiting for a fixed timer.
 - **Direct Ethernet support**: documented static IP setup, firewall rules, and bat files for point-to-point cable connections achieving ~9 µs p50 latency.
 - **MMCSS on target**: registers under the Windows "Games" multimedia task for reserved CPU time; skipped on source to avoid competing with iRacing's own registrations.
 - **NULL DACL shared memory**: target map and event created with explicit "allow all" security descriptor, matching iRacing's own setup, so SimHub and other apps can open the map regardless of elevation.
-- Heartbeat packets during menus and loading screens keep the SimHub connection alive between sessions.
+- Heartbeat packets during menus and loading screens prevent SimHub from disconnecting between sessions.
 - `IRSDK_ST_CONNECTED` is zeroed before closing the target map so SimHub sees a clean disconnect.
 - Stats show p50/p99/max latency per window with end-to-end measurement (source processing + network transit).
 - Socket buffers set to 2 MB on both sides; the original used the OS default, which is smaller than one full frame.
