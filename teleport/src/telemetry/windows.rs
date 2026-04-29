@@ -2,7 +2,10 @@ use super::{TelemetryError, TelemetryProvider};
 use std::ffi::c_void;
 use windows_sys::Win32::{
     Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0},
-    Security::SECURITY_ATTRIBUTES,
+    Security::{
+        InitializeSecurityDescriptor, SetSecurityDescriptorDacl,
+        SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR,
+    },
     System::Memory::{
         CreateFileMappingW, MapViewOfFile, MEMORY_MAPPED_VIEW_ADDRESS, OpenFileMappingW,
         UnmapViewOfFile, FILE_MAP_ALL_ACCESS, FILE_MAP_READ, PAGE_READWRITE,
@@ -77,9 +80,23 @@ impl TelemetryProvider for WindowsTelemetry {
 
     fn create(size: usize) -> Result<Self, TelemetryError> {
         unsafe {
+            // Use a NULL DACL so any process can open the shared memory and
+            // event regardless of elevation or user context — matches iRacing's
+            // own shared memory setup.
+            let mut sd = std::mem::zeroed::<SECURITY_DESCRIPTOR>();
+            InitializeSecurityDescriptor(
+                &mut sd as *mut _ as *mut c_void,
+                1, // SECURITY_DESCRIPTOR_REVISION
+            );
+            SetSecurityDescriptorDacl(
+                &mut sd as *mut _ as *mut c_void,
+                1,                        // bDaclPresent = TRUE
+                std::ptr::null_mut(),     // pDacl = NULL → grant all access
+                0,                        // bDaclDefaulted = FALSE
+            );
             let sa = SECURITY_ATTRIBUTES {
                 nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-                lpSecurityDescriptor: std::ptr::null_mut(),
+                lpSecurityDescriptor: &mut sd as *mut _ as *mut c_void,
                 bInheritHandle: 0,
             };
 
