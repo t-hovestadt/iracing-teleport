@@ -30,6 +30,12 @@ struct Header {
 }
 
 const _: () = assert!(std::mem::size_of::<Header>() == 24);
+const _: () = assert!(MAX_PAYLOAD_PER_DATAGRAM > 0);
+
+// Maximum fragments per sequence. A 1.1 MB session-info frame compresses to
+// ~300 KB, requiring at most ~34 × 8976-byte fragments. 256 is a generous cap
+// that still prevents OOM from a malformed packet claiming thousands of fragments.
+const MAX_FRAGMENTS: u16 = 256;
 
 // ── Sender ────────────────────────────────────────────────────────────────────
 
@@ -136,6 +142,7 @@ pub struct Ingested<'a> {
 pub struct Receiver {
     buf: Vec<u8>,
     received: Vec<bool>,
+    max_payload: usize,
     current_seq: Option<u32>,
     total_frags: u16,
     got_frags: u16,
@@ -153,6 +160,7 @@ impl Receiver {
         Self {
             buf: Vec::with_capacity(max_payload),
             received: Vec::new(),
+            max_payload,
             current_seq: None,
             total_frags: 0,
             got_frags: 0,
@@ -236,6 +244,19 @@ impl Receiver {
         if self.got_frags > 0 && self.got_frags < self.total_frags {
             self.dropped_sequences += 1;
         }
+
+        // Reject malformed packets before allocating. Legitimate session-info
+        // frames are at most ~34 fragments and ~300 KB compressed; anything
+        // beyond MAX_FRAGMENTS or max_payload is corrupt or a spoofed packet.
+        // Set total_frags = 0 so the idx >= total_frags check in ingest() silently
+        // discards all subsequent fragments for this sequence.
+        if hdr.fragments > MAX_FRAGMENTS || hdr.payload_size as usize > self.max_payload {
+            self.current_seq = Some(hdr.sequence);
+            self.total_frags = 0;
+            self.got_frags = 0;
+            return;
+        }
+
         self.current_seq = Some(hdr.sequence);
         self.total_frags = hdr.fragments;
         self.got_frags = 0;

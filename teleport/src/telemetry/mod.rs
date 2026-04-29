@@ -1,6 +1,15 @@
 /// iRacing writes ~1.1 MB of telemetry, but allocate 2 MB for future headroom.
 pub const MAX_TELEMETRY_SIZE: usize = 2 * 1024 * 1024;
 
+/// Size of the irsdk_header struct in bytes.
+///
+/// The header occupies the first 112 bytes of the shared memory map and contains
+/// version, status, tick rate, session-info offsets, variable descriptor pointers,
+/// and the ring-buffer table (up to 4 × 16-byte varBuf entries ending at byte 112).
+/// Source prepends this to every partial frame so target always has current
+/// tickCount values and can identify the active varBuf slot.
+pub const IRSDK_HEADER_SIZE: usize = 112;
+
 #[derive(Debug)]
 #[allow(dead_code)]
 pub enum TelemetryError {
