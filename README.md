@@ -65,59 +65,6 @@ See the [Direct Ethernet setup](#direct-ethernet-setup) section below.
 
 ---
 
-## Direct Ethernet setup
-
-A direct Ethernet cable between the two PCs (no router, no switch) gives the lowest possible latency — typically **~9 µs p50** vs ~100–200 µs over a LAN switch. You need:
-
-- A network adapter on each PC (PCIe/M.2 cards work well; USB adapters also work)
-- A Cat 5e or better Ethernet cable
-- Static IP addresses (Windows won't auto-assign usable IPs on a direct link)
-
-**1. Assign static IPs**
-
-On each PC, set a static IP on the direct-link adapter:
-
-| PC | IP | Subnet |
-|----|-----|--------|
-| iRacing PC | `192.168.50.1` | `255.255.255.0` |
-| SimHub PC | `192.168.50.2` | `255.255.255.0` |
-
-In Windows: *Network & Internet → Change adapter options → right-click adapter → Properties → IPv4 → Use the following IP address*. Leave gateway and DNS blank.
-
-**2. Firewall rules (on both PCs)**
-
-Add an inbound UDP rule for port 5000 on **both** machines:
-
-```
-New-NetFirewallRule -DisplayName "iRacing Teleport" -Direction Inbound -Protocol UDP -LocalPort 5000 -Action Allow
-```
-
-Or via *Windows Defender Firewall → Advanced Settings → Inbound Rules → New Rule → Port → UDP → 5000 → Allow*.
-
-**3. Bat files**
-
-`start-source.bat` on the **iRacing PC** — bind source to port 5000 so resync requests from target are covered by the firewall rule above:
-
-```batch
-@echo off
-cd /d "D:\Simracing"
-source.exe --unicast --target 192.168.50.2:5000 --bind 192.168.50.1:5000
-pause
-```
-
-`start-target.bat` on the **SimHub PC**:
-
-```batch
-@echo off
-cd /d "D:\Simracing"
-target.exe --unicast --bind 192.168.50.2:5000
-pause
-```
-
-> **Why `--bind 192.168.50.1:5000` on source?** Source needs to receive 1-byte resync requests from target so it can send a fresh session-info frame immediately on first connect. If source binds to an ephemeral port (`:0`), Windows assigns a random port number that isn't covered by the port 5000 firewall rule, so resync is silently blocked and SimHub takes up to 10 seconds to activate instead of ~1 second.
-
----
-
 ## How it works
 
 - **source** maps the iRacing shared memory region, compresses each frame with LZ4, and sends it over UDP. It waits indefinitely for iRacing to start and reconnects automatically if iRacing closes.
@@ -178,6 +125,59 @@ CARGO_TARGET_DIR=/tmp/iracing-build cargo build --release --target x86_64-pc-win
 ```
 
 > If your working directory path contains spaces, set `CARGO_TARGET_DIR` to a path without spaces (the `mingw-w64` linker doesn't handle quoted paths).
+
+---
+
+## Direct Ethernet setup
+
+A direct Ethernet cable between the two PCs (no router, no switch) gives the lowest possible latency — typically **~9 µs p50** vs ~100–200 µs over a LAN switch. You need:
+
+- A network adapter on each PC (PCIe/M.2 cards work well; USB adapters also work)
+- A Cat 5e or better Ethernet cable
+- Static IP addresses (Windows won't auto-assign usable IPs on a direct link)
+
+**1. Assign static IPs**
+
+On each PC, set a static IP on the direct-link adapter:
+
+| PC | IP | Subnet |
+|----|-----|--------|
+| iRacing PC | `192.168.50.1` | `255.255.255.0` |
+| SimHub PC | `192.168.50.2` | `255.255.255.0` |
+
+In Windows: *Network & Internet → Change adapter options → right-click adapter → Properties → IPv4 → Use the following IP address*. Leave gateway and DNS blank.
+
+**2. Firewall rules (on both PCs)**
+
+Add an inbound UDP rule for port 5000 on **both** machines:
+
+```
+New-NetFirewallRule -DisplayName "iRacing Teleport" -Direction Inbound -Protocol UDP -LocalPort 5000 -Action Allow
+```
+
+Or via *Windows Defender Firewall → Advanced Settings → Inbound Rules → New Rule → Port → UDP → 5000 → Allow*.
+
+**3. Bat files**
+
+`start-source.bat` on the **iRacing PC** — bind source to port 5000 so resync requests from target are covered by the firewall rule above:
+
+```batch
+@echo off
+cd /d "D:\Simracing"
+source.exe --unicast --target 192.168.50.2:5000 --bind 192.168.50.1:5000
+pause
+```
+
+`start-target.bat` on the **SimHub PC**:
+
+```batch
+@echo off
+cd /d "D:\Simracing"
+target.exe --unicast --bind 192.168.50.2:5000
+pause
+```
+
+> **Why `--bind 192.168.50.1:5000` on source?** Source needs to receive 1-byte resync requests from target so it can send a fresh session-info frame immediately on first connect. If source binds to an ephemeral port (`:0`), Windows assigns a random port number that isn't covered by the port 5000 firewall rule, so resync is silently blocked and SimHub takes up to 10 seconds to activate instead of ~1 second.
 
 ---
 
