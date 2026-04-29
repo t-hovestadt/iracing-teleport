@@ -16,6 +16,9 @@ use windows_sys::Win32::{
 const MEM_NAME: &str = "Local\\IRSDKMemMapFileName\0";
 const EVENT_NAME: &str = "Local\\IRSDKDataValidEvent\0";
 
+// Minimum access right needed for WaitForSingleObject.
+const SYNCHRONIZE: u32 = 0x00100000;
+
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().collect()
 }
@@ -63,8 +66,7 @@ impl TelemetryProvider for WindowsTelemetry {
                 return Err(TelemetryError::Unavailable);
             }
 
-            // 0x00100000 = SYNCHRONIZE — minimum access needed for WaitForSingleObject.
-            let h_event = OpenEventW(0x00100000u32, 0, wide(EVENT_NAME).as_ptr());
+            let h_event = OpenEventW(SYNCHRONIZE, 0, wide(EVENT_NAME).as_ptr());
             if h_event == 0 || h_event == INVALID_HANDLE_VALUE {
                 UnmapViewOfFile(view);
                 CloseHandle(h_map);
@@ -157,7 +159,7 @@ impl TelemetryProvider for WindowsTelemetry {
 
     fn active_var_buf(&self) -> Option<(usize, usize)> {
         let d = self.as_slice();
-        if d.len() < 112 {
+        if d.len() < super::IRSDK_HEADER_SIZE {
             return None;
         }
         // irsdk_header offsets (all i32 little-endian):

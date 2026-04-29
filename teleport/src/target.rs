@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use crate::platform::{boost_thread_priority, pin_thread_to_core, HighResTimer, MmcssGuard};
 use crate::protocol::{MAX_DATAGRAM_SIZE, Receiver as ProtoReceiver};
 use crate::stats::Stats;
-use crate::telemetry::{MAX_TELEMETRY_SIZE, Telemetry, TelemetryProvider};
+use crate::telemetry::{IRSDK_HEADER_SIZE, MAX_TELEMETRY_SIZE, Telemetry, TelemetryProvider};
 
 const STALE_TIMEOUT: Duration = Duration::from_secs(10);
 // How often target retries a resync request to source when has_full_frame is false.
@@ -168,10 +168,9 @@ pub fn run(
                                 fanalab_stub = FanalabStub::spawn();
                             }
                         } else if has_full_frame {
-                            // Partial frame — payload is irsdk_header (112 bytes) || varBuf data.
+                            // Partial frame — payload is irsdk_header || varBuf data.
                             // Source prepends the header so tickCounts stay current, preventing
                             // SimHub from reading the wrong varBuf slot after a ring rotation.
-                            const HDR: usize = 112;
                             let off = res.buf_offset as usize;
                             let dec_len = match decompress_into(compressed, &mut partial_staging) {
                                 Ok(n) => n,
@@ -180,18 +179,18 @@ pub fn run(
                                     continue;
                                 }
                             };
-                            if dec_len < HDR {
-                                eprintln!("partial frame decompressed to {dec_len} bytes, expected >{HDR}");
+                            if dec_len < IRSDK_HEADER_SIZE {
+                                eprintln!("partial frame decompressed to {dec_len} bytes, expected >{IRSDK_HEADER_SIZE}");
                                 continue;
                             }
-                            let var_len = dec_len - HDR;
+                            let var_len = dec_len - IRSDK_HEADER_SIZE;
                             let map = t.as_slice_mut();
-                            if map.len() < HDR || off + var_len > map.len() {
+                            if map.len() < IRSDK_HEADER_SIZE || off + var_len > map.len() {
                                 eprintln!("partial frame out of range (off={off} var_len={var_len}), discarding");
                                 continue;
                             }
-                            map[..HDR].copy_from_slice(&partial_staging[..HDR]);
-                            map[off..off + var_len].copy_from_slice(&partial_staging[HDR..dec_len]);
+                            map[..IRSDK_HEADER_SIZE].copy_from_slice(&partial_staging[..IRSDK_HEADER_SIZE]);
+                            map[off..off + var_len].copy_from_slice(&partial_staging[IRSDK_HEADER_SIZE..dec_len]);
                             wrote = true;
                         }
                         // else: partial before session-info — fall through to resync request below.

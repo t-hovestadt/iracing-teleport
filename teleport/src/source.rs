@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use crate::platform::{boost_thread_priority, pin_thread_to_core, HighResTimer};
 use crate::protocol::Sender;
 use crate::stats::Stats;
-use crate::telemetry::{MAX_TELEMETRY_SIZE, Telemetry, TelemetryError, TelemetryProvider};
+use crate::telemetry::{IRSDK_HEADER_SIZE, MAX_TELEMETRY_SIZE, Telemetry, TelemetryError, TelemetryProvider};
 
 const RECONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL_INTERVAL_MS: u32 = 200;
@@ -158,18 +158,11 @@ pub fn run(
 
         last_data = Instant::now();
 
-        // Decide: session-info frame or partial varBuf frame.
-        //
-        // Send a session-info frame when sessionInfoUpdate changes (new session,
-        // new track, car change etc.), when a target has requested a resync, or
-        // when FULL_FRAME_INTERVAL has elapsed as a fallback. Session-info frames
-        // carry the static prefix only — header, variable headers, and session YAML
-        // (~150–250 KB) — via session_info_end(). Target writes this prefix to the
-        // map but withholds the SimHub SetEvent signal. The following partial frame
-        // fills the varBuf region, then signals SimHub so it always sees a fully-
-        // populated map on the first notification. Session-info frames are rare
-        // (session changes + 10 s fallback) so the bandwidth savings are worthwhile.
-        // For every other tick send only the active variable buffer (~5–15 KB).
+        // Send a full session-info frame when sessionInfoUpdate changes (new session,
+        // track, or car), when target requests a resync, or every FULL_FRAME_INTERVAL
+        // as a fallback. For every other tick send only the active variable buffer
+        // (~5–15 KB). See the "SimHub activation invariant" block below for why
+        // session-info frames must always send the complete map.
         let force_full = last_full_frame.elapsed() >= FULL_FRAME_INTERVAL || pending_resync;
         let (buf_offset, payload_slice) = {
             let data = telemetry.as_slice();
@@ -215,17 +208,16 @@ pub fn run(
 
         let data = telemetry.as_slice();
 
-        // For partial frames, prepend the 112-byte irsdk header so the target
-        // always writes current tickCounts. Without this, SimHub could read the
-        // wrong varBuf slot when iRacing rotates to a new ring position.
+        // For partial frames, prepend the irsdk header so the target always writes
+        // current tickCounts. Without this, SimHub could read the wrong varBuf slot
+        // when iRacing rotates to a new ring position.
         let payload: &[u8] = if buf_offset == u32::MAX {
             &data[payload_slice]
         } else {
-            const HDR: usize = 112;
             let var_slice = &data[payload_slice];
-            partial_staging[..HDR].copy_from_slice(&data[..HDR]);
-            partial_staging[HDR..HDR + var_slice.len()].copy_from_slice(var_slice);
-            &partial_staging[..HDR + var_slice.len()]
+            partial_staging[..IRSDK_HEADER_SIZE].copy_from_slice(&data[..IRSDK_HEADER_SIZE]);
+            partial_staging[IRSDK_HEADER_SIZE..IRSDK_HEADER_SIZE + var_slice.len()].copy_from_slice(var_slice);
+            &partial_staging[..IRSDK_HEADER_SIZE + var_slice.len()]
         };
 
         let compressed_len = match compress_into(payload, &mut compress_buf) {
