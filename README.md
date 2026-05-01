@@ -130,7 +130,7 @@ CARGO_TARGET_DIR=/tmp/iracing-build cargo build --release --target x86_64-pc-win
 
 ## Direct Ethernet setup
 
-A direct Ethernet cable between the two PCs (no router, no switch) gives the lowest possible latency — typically **~9 µs p50** vs ~100–200 µs over a LAN switch. You need:
+A direct Ethernet cable between the two PCs (no router, no switch) gives the lowest possible latency — typically **~13 µs end-to-end p50** (~8 µs on the wire, ~5 µs source-side) vs ~100–200 µs over a LAN switch. You need:
 
 - A network adapter on each PC (PCIe/M.2 cards work well; USB adapters also work)
 - A Cat 5e or better Ethernet cable
@@ -157,7 +157,26 @@ New-NetFirewallRule -DisplayName "iRacing Teleport" -Direction Inbound -Protocol
 
 Or via *Windows Defender Firewall → Advanced Settings → Inbound Rules → New Rule → Port → UDP → 5000 → Allow*.
 
-**3. Bat files**
+**3. NIC settings (both PCs)**
+
+In Device Manager → Network Adapters → right-click the direct-link adapter → Properties, apply these settings on **both** machines:
+
+**Advanced tab:**
+| Setting | Value |
+|---------|-------|
+| Energy Efficient Ethernet | Disabled |
+| Wake on Magic Packet | Disabled |
+| Wake on Pattern Match | Disabled |
+| Auto MDI/MDIX | Auto |
+| Speed & Duplex | 1.0 Gbps Full Duplex |
+
+**Power Management tab:**
+- Uncheck **"Allow the computer to turn off this device to save power"**
+- Uncheck **"Allow this device to wake the computer"**
+
+Setting names vary by NIC manufacturer — look for equivalents if the exact names differ.
+
+**4. Bat files**
 
 `start-source.bat` on the **iRacing PC** — bind source to port 5000 so resync requests from target are covered by the firewall rule above:
 
@@ -178,6 +197,14 @@ pause
 ```
 
 > **Why `--bind 192.168.50.1:5000` on source?** Source needs to receive 1-byte resync requests from target so it can send a fresh session-info frame immediately on first connect. If source binds to an ephemeral port (`:0`), Windows assigns a random port number that isn't covered by the port 5000 firewall rule, so resync is silently blocked and SimHub takes up to 10 seconds to activate instead of ~1 second.
+
+**Troubleshooting**
+
+*Adapter shows Disconnected despite cable plugged in:* Wake-on-LAN or PCIe ASPM can leave the NIC in a state a warm reboot doesn't clear. Do a full **Shut down** (not Restart), wait 30–60 seconds for capacitors to drain, then power on. To prevent recurrence: disable Wake-on-LAN in the NIC settings above and in BIOS (look for "Wake on LAN" or "PCIe ASPM").
+
+*Link won't establish between two NICs:* Some NIC brands fail auto-negotiation on a direct connection. The Speed & Duplex setting above (1.0 Gbps Full Duplex) fixes this. Also confirm **Auto MDI/MDIX** is set to Auto — if disabled, a straight-through cable won't link up without a crossover cable.
+
+*Can't set static IP via PowerShell (`element not found` or `already exists`):* Plug the cable in first so the adapter shows a link, then set the IP. If the error is `already exists`, the IP may already be configured — check with `Get-NetIPAddress -InterfaceIndex <N>`. To reset: `Remove-NetIPAddress -InterfaceIndex <N> -Confirm:$false` then re-add.
 
 ---
 
@@ -221,11 +248,11 @@ Release profile uses LTO and a single codegen unit.
 
 Rewritten from scratch based on [sklose/iracing-teleport](https://github.com/sklose/iracing-teleport). Main differences:
 
-- **Partial frames**: sends only the active variable buffer (~5–15 KB) per frame instead of the full 1.1 MB map; latency drops from ~1.4 ms to ~200–500 µs on a typical LAN, ~9 µs on a direct Ethernet link.
+- **Partial frames**: sends only the active variable buffer (~5–15 KB) per frame instead of the full 1.1 MB map; latency drops from ~1.4 ms to ~200–500 µs on a typical LAN, ~13 µs end-to-end on a direct Ethernet link.
 - Each partial frame includes the 112-byte irsdk header so target has current `tickCount` values and picks the right varBuf slot after a ring rotation.
 - Session-info frames send only the static prefix (~60–150 KB compressed) with `status` zeroed; partial frames write varBuf first then the irsdk header last. `status=1` only becomes visible after varBuf is populated, so SimHub's independent `irsdk_header.status` poll never sees `status=1` with empty telemetry values.
 - **Bidirectional resync**: target sends a 1-byte UDP packet to source when it needs a session-info frame; source responds on the next tick instead of waiting for a fixed timer.
-- **Direct Ethernet support**: documented static IP setup, firewall rules, and bat files for point-to-point cable connections achieving ~9 µs p50 latency.
+- **Direct Ethernet support**: documented static IP setup, firewall rules, and bat files for point-to-point cable connections achieving ~13 µs end-to-end p50 (~8 µs network transit).
 - **MMCSS on target**: registers under the Windows "Games" multimedia task for reserved CPU time; skipped on source to avoid competing with iRacing's own registrations.
 - **NULL DACL shared memory**: target map and event created with explicit "allow all" security descriptor, matching iRacing's own setup, so SimHub and other apps can open the map regardless of elevation.
 - Heartbeat packets during menus and loading screens prevent SimHub from disconnecting between sessions.
