@@ -175,10 +175,15 @@ fn percentiles(samples: &mut [u64]) -> (u64, u64, u64) {
     if samples.is_empty() {
         return (0, 0, 0);
     }
-    samples.sort_unstable();
     let n = samples.len();
-    let p50 = samples[n / 2];
-    let p99 = samples[(n * 99 / 100).min(n - 1)];
-    let max = samples[n - 1];
+    let p50_idx = n / 2;
+    let p99_idx = (n * 99 / 100).min(n - 1);
+    // Three O(n) partial-selection passes instead of one O(n log n) sort.
+    // Called in decreasing index order: select_nth_unstable(k) may rearrange
+    // elements at indices other than k, but we capture the pivot value into a
+    // local variable before issuing the next call.
+    let max = *samples.select_nth_unstable(n - 1).1;
+    let p99 = *samples.select_nth_unstable(p99_idx).1;
+    let p50 = *samples.select_nth_unstable(p50_idx).1;
     (p50, p99, max)
 }
