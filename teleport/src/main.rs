@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use teleport::{source, target, DEFAULT_MULTICAST, DEFAULT_PORT};
-use teleport::source::{DEFAULT_RECONNECT_TIMEOUT_SECS, DEFAULT_DATAGRAM_SIZE};
+use teleport::source::{DEFAULT_RECONNECT_TIMEOUT_SECS, DEFAULT_DATAGRAM_SIZE, DEFAULT_KEYFRAME_INTERVAL};
 use std::sync::mpsc;
 
 /// Stream iRacing telemetry over the network so SimHub (or any iRacing-compatible
@@ -53,6 +53,18 @@ enum Command {
         /// Target auto-detects the sender's fragment size — only source needs this.
         #[arg(long, default_value_t = DEFAULT_DATAGRAM_SIZE)]
         datagram_size: usize,
+
+        /// Disable XOR-delta compression for partial frames. Delta is enabled by
+        /// default when the target supports it; use this flag to force full frames
+        /// on every tick (higher bandwidth, zero reconstruction risk).
+        #[arg(long)]
+        no_delta: bool,
+
+        /// Number of partial frames between full (non-delta) keyframes.
+        /// Lower values send more keyframes (safer on lossy links at the cost of
+        /// slightly higher bandwidth); higher values maximise delta savings.
+        #[arg(long, default_value_t = DEFAULT_KEYFRAME_INTERVAL)]
+        keyframe_interval: u16,
     },
 
     /// Receive telemetry and expose it as a local iRacing memory map.
@@ -111,10 +123,10 @@ fn main() {
     .expect("failed to install Ctrl-C handler");
 
     let result = match cli.command {
-        Command::Source { bind, target, unicast, busy_wait, pin_core, high_priority, reconnect_timeout, datagram_size } => {
+        Command::Source { bind, target, unicast, busy_wait, pin_core, high_priority, reconnect_timeout, datagram_size, no_delta, keyframe_interval } => {
             let mode = if unicast { "unicast" } else { "multicast" };
             println!("source → {target} ({mode})");
-            source::run(&bind, &target, unicast, busy_wait, pin_core, high_priority, reconnect_timeout, datagram_size, rx)
+            source::run(&bind, &target, unicast, busy_wait, pin_core, high_priority, reconnect_timeout, datagram_size, no_delta, keyframe_interval, rx)
         }
         Command::Target { bind, group, unicast, busy_wait, pin_core, fanalab, stale_timeout, high_priority } => {
             let dest = if unicast { "unicast" } else { group.as_str() };

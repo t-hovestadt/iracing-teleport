@@ -11,6 +11,7 @@ pub struct Stats {
     updates: u64,
     bytes: u64,
     uncompressed_bytes: u64,
+    delta_updates: u64,
     dropped: u64,
     partial_latencies: Vec<u64>,
     full_latencies: Vec<u64>,
@@ -37,6 +38,7 @@ impl Stats {
             updates: 0,
             bytes: 0,
             uncompressed_bytes: 0,
+            delta_updates: 0,
             dropped: 0,
             partial_latencies: Vec::with_capacity(512),
             full_latencies: Vec::with_capacity(8),
@@ -60,11 +62,15 @@ impl Stats {
     /// `transit_us` — microseconds from first fragment arrival to after
     ///   decompression on the target side; pass `0` on the source.
     /// `is_full` — true for full-map frames, false for partial varBuf frames.
-    pub fn record(&mut self, compressed: usize, uncompressed: usize, source_us: u64, transit_us: u64, is_full: bool) {
+    /// `is_delta` — true when this partial frame was XOR-delta encoded.
+    pub fn record(&mut self, compressed: usize, uncompressed: usize, source_us: u64, transit_us: u64, is_full: bool, is_delta: bool) {
         let total_us = source_us + transit_us;
         self.updates += 1;
         self.bytes += compressed as u64;
         self.uncompressed_bytes += uncompressed as u64;
+        if is_delta {
+            self.delta_updates += 1;
+        }
 
         if is_full {
             self.full_latencies.push(total_us);
@@ -123,12 +129,21 @@ impl Stats {
         if !self.source_latencies.is_empty() {
             line.push_str(&format!("  src: {sp50}/{sp99} µs p50/p99"));
         }
+        // Show delta % when delta is active — helps users confirm delta encoding is live.
+        if self.delta_updates > 0 {
+            let partial_updates = self.updates.saturating_sub(full_count);
+            if partial_updates > 0 {
+                let pct = self.delta_updates * 100 / partial_updates;
+                line.push_str(&format!("  {pct}% delta"));
+            }
+        }
         line.push_str(&format!("  {} dropped", self.dropped));
         println!("{line}");
 
         self.updates = 0;
         self.bytes = 0;
         self.uncompressed_bytes = 0;
+        self.delta_updates = 0;
         self.dropped = 0;
         self.partial_latencies.clear();
         self.full_latencies.clear();

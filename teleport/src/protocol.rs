@@ -11,6 +11,33 @@ pub const MAX_DATAGRAM_SIZE: usize = 9_000;
 const HEADER_SIZE: usize = std::mem::size_of::<Header>();
 pub const MAX_PAYLOAD_PER_DATAGRAM: usize = MAX_DATAGRAM_SIZE - HEADER_SIZE;
 
+/// Bit flag set in `buf_offset` to signal an XOR-delta encoded partial frame.
+/// The real write offset is `buf_offset & !DELTA_BIT`.
+/// Never set on session-info frames (`buf_offset == u32::MAX`).
+/// Old receivers see a large `buf_offset`, fail the bounds check, discard the
+/// frame, and send a resync — the source responds with a full keyframe (safe).
+pub const DELTA_BIT: u32 = 1 << 31;
+
+/// XOR `current` against `previous` into `output` (all slices same length).
+/// Uses 8-byte chunks so LLVM auto-vectorises to SSE2/AVX2.
+pub fn xor_delta(current: &[u8], previous: &[u8], output: &mut [u8]) {
+    debug_assert_eq!(current.len(), previous.len(), "xor_delta: current/previous length mismatch");
+    debug_assert_eq!(current.len(), output.len(),   "xor_delta: current/output length mismatch");
+    let len = current.len();
+    let chunks = len / 8;
+    let (cur_chunks, cur_tail) = current.split_at(chunks * 8);
+    let (prev_chunks, prev_tail) = previous.split_at(chunks * 8);
+    let (out_chunks, out_tail) = output.split_at_mut(chunks * 8);
+    for i in 0..chunks {
+        let c = u64::from_ne_bytes(cur_chunks[i * 8..i * 8 + 8].try_into().unwrap());
+        let p = u64::from_ne_bytes(prev_chunks[i * 8..i * 8 + 8].try_into().unwrap());
+        out_chunks[i * 8..i * 8 + 8].copy_from_slice(&(c ^ p).to_ne_bytes());
+    }
+    for i in 0..cur_tail.len() {
+        out_tail[i] = cur_tail[i] ^ prev_tail[i];
+    }
+}
+
 /// Wire header prepended to every UDP datagram — 24 bytes, no padding.
 ///
 /// Fields are ordered largest-to-smallest alignment so `repr(C, packed)`
@@ -302,8 +329,15 @@ impl Receiver {
         self.received.clear();
         self.received.resize(hdr.fragments as usize, false);
 
-        self.buf.clear();
-        self.buf.resize(hdr.payload_size as usize, 0);
+        // Avoid O(n) zero-fill when shrinking: truncate leaves existing bytes in
+        // place, and they will be overwritten by ingest() before being read back.
+        // Only grow (with zeroing) when the new sequence needs more space.
+        let new_size = hdr.payload_size as usize;
+        if new_size > self.buf.len() {
+            self.buf.resize(new_size, 0);
+        } else {
+            self.buf.truncate(new_size);
+        }
     }
 }
 
@@ -563,6 +597,68 @@ mod tests {
         assert_eq!(decompressed, original);
         assert_eq!(receiver.last_source_us, 99);
         assert_eq!(receiver.last_buf_offset, 0x4000u32);
+    }
+
+    // ── XOR-delta tests ───────────────────────────────────────────────────────
+
+    /// Round-trip XOR-delta: modify 5% of a 16 KB buffer, encode the delta,
+    /// then decode it and verify the reconstructed bytes match.
+    #[test]
+    fn xor_delta_round_trip() {
+        use lz4_flex::block::{compress_into, decompress_into, get_maximum_output_size};
+
+        let size = 16_000usize;
+        let prev: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+        let mut current = prev.clone();
+        // Modify roughly 5% of the bytes.
+        for i in (0..size).step_by(20) {
+            current[i] = current[i].wrapping_add(1);
+        }
+
+        // Compute delta and compress it.
+        let mut delta = vec![0u8; size];
+        xor_delta(&current, &prev, &mut delta);
+
+        let mut compressed = vec![0u8; get_maximum_output_size(size)];
+        let compressed_len = compress_into(&delta, &mut compressed).unwrap();
+        let compressed = &compressed[..compressed_len];
+
+        // Delta of a mostly-unchanged buffer should compress significantly better
+        // than the raw current buffer.
+        let mut raw_compressed = vec![0u8; get_maximum_output_size(size)];
+        let raw_len = compress_into(&current, &mut raw_compressed).unwrap();
+        assert!(
+            compressed.len() < raw_len,
+            "delta ({} bytes) should be smaller than raw ({raw_len} bytes)",
+            compressed.len(),
+        );
+
+        // Decompress and reconstruct: current = delta XOR prev.
+        let mut decompressed_delta = vec![0u8; size];
+        decompress_into(compressed, &mut decompressed_delta).unwrap();
+
+        let mut reconstructed = vec![0u8; size];
+        xor_delta(&decompressed_delta, &prev, &mut reconstructed);
+        assert_eq!(reconstructed, current, "XOR-delta round-trip failed");
+    }
+
+    /// When prev_varbuf is all zeros (fresh target), the delta equals the
+    /// current buffer. The target XOR-reconstructs back to the original.
+    #[test]
+    fn xor_delta_zeroed_prev() {
+        let size = 4_000usize;
+        let current: Vec<u8> = (0..size).map(|i| (i % 199) as u8).collect();
+        let prev = vec![0u8; size];
+
+        let mut delta = vec![0u8; size];
+        xor_delta(&current, &prev, &mut delta);
+        // delta == current when prev is all zeros.
+        assert_eq!(delta, current);
+
+        // Reconstruct: XOR delta against zeros gives back current.
+        let mut reconstructed = vec![0u8; size];
+        xor_delta(&delta, &prev, &mut reconstructed);
+        assert_eq!(reconstructed, current);
     }
 
     /// Session-sequence counter increments across successive sends; the

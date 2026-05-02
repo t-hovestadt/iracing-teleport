@@ -5,7 +5,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crate::platform::{boost_thread_priority, pin_thread_to_core, set_high_priority, HighResTimer};
-use crate::protocol::Sender;
+use crate::protocol::{DELTA_BIT, Sender, xor_delta};
 use crate::stats::Stats;
 use crate::telemetry::{IRSDK_HEADER_SIZE, MAX_TELEMETRY_SIZE, Telemetry, TelemetryError, TelemetryProvider};
 
@@ -13,6 +13,8 @@ pub const DEFAULT_RECONNECT_TIMEOUT_SECS: u64 = 10;
 /// Default UDP datagram size for source — matches `protocol::MAX_DATAGRAM_SIZE`.
 /// Expose so CLI binaries can use it as the default value for `--datagram-size`.
 pub use crate::protocol::MAX_DATAGRAM_SIZE as DEFAULT_DATAGRAM_SIZE;
+/// Default number of partial frames between full (non-delta) keyframes.
+pub const DEFAULT_KEYFRAME_INTERVAL: u16 = 60;
 const POLL_INTERVAL_MS: u32 = 200;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 // Fallback interval for sending a session-info frame when the bidirectional
@@ -56,6 +58,8 @@ pub fn run(
     high_priority: bool,
     reconnect_timeout_secs: u64,
     datagram_size: usize,
+    no_delta: bool,
+    keyframe_interval: u16,
     shutdown: mpsc::Receiver<()>,
 ) -> std::io::Result<()> {
     let reconnect_timeout = Duration::from_secs(reconnect_timeout_secs);
@@ -148,6 +152,18 @@ pub fn run(
     // Set to true when a resync request arrives from a target; causes the next
     // data tick to send a session-info frame immediately.
     let mut pending_resync = false;
+    // XOR-delta state. prev_varbuf holds the last partial frame sent (irsdk_header
+    // prepended); delta_buf is the XOR workspace. Both are zeroed initially — a
+    // zeroed prev means the delta == current, which the target reconstructs
+    // correctly even before it receives its first keyframe.
+    let mut prev_varbuf = vec![0u8; MAX_TELEMETRY_SIZE];
+    let mut delta_buf = vec![0u8; MAX_TELEMETRY_SIZE];
+    // True once a capability packet from the target confirms it speaks the delta
+    // protocol. Stays false until the first resync packet with byte[1] & 0x01 set.
+    let mut target_supports_delta = false;
+    // Counts partial frames sent; resets to 0 after each session-info frame so
+    // the first partial frame after a session-info is always a keyframe.
+    let mut tick_counter: u32 = 0;
 
     loop {
         if shutdown.try_recv().is_ok() {
@@ -160,10 +176,15 @@ pub fn run(
             // returns immediately when no new data). Housekeeping (resync recv,
             // heartbeat) is self-throttled by the elapsed-time guards below, so it
             // only runs at the normal rate regardless of how fast the loop spins.
-            // Check for resync requests from targets even while iRacing is idle.
-            let mut tmp = [0u8; 1];
-            if socket.recv_from(&mut tmp).is_ok() {
+            // Check for resync/capability packets from targets even while iRacing is idle.
+            let mut cap_buf = [0u8; 2];
+            if socket.recv_from(&mut cap_buf).is_ok() {
                 pending_resync = true;
+                if !no_delta {
+                    // Byte 0: resync flag (0x01). Byte 1: capability bitfield, bit 0 = delta.
+                    // Old 1-byte targets leave byte 1 as 0 — falls through to false.
+                    target_supports_delta = cap_buf.get(1).map(|&b| b & 0x01 != 0).unwrap_or(false);
+                }
             }
 
             // Send a tiny "still here" packet so the target keeps its memory map
@@ -183,6 +204,11 @@ pub fn run(
                 got_data = false;
                 last_session_update = -1;
                 last_full_frame = Instant::now() - FULL_FRAME_INTERVAL;
+                // Reset delta state: target_supports_delta until we hear a new
+                // capability packet; tick_counter so the first partial frame after
+                // reconnect is a keyframe.
+                target_supports_delta = false;
+                tick_counter = 0;
                 telemetry = loop {
                     match try_open(&shutdown)? {
                         OpenResult::Connected(t) => break t,
@@ -222,11 +248,13 @@ pub fn run(
         // (~5–15 KB). See the "SimHub activation invariant" block below for why
         // session-info frames must always send the complete map.
         let force_full = last_full_frame.elapsed() >= FULL_FRAME_INTERVAL || pending_resync;
-        // Single snapshot: both the offset/session-update calculation and the payload
-        // copy use the same slice, eliminating the window where iRacing could rotate
-        // the ring buffer between the two reads.
+        // `data` is a live pointer into iRacing's memory-mapped region — NOT a
+        // snapshot. iRacing writes concurrently. For partial frames we re-check
+        // tickCount after copying to detect torn reads (TOCTOU guard below).
         let data = telemetry.as_slice();
-        let (buf_offset, payload_slice) = {
+        // tick_field_off: byte offset in the header of the active slot's tickCount.
+        // Set to 0 for session-info frames (static prefix, no ring-buffer race).
+        let (buf_offset, payload_slice, tick_before, tick_field_off) = {
             let session_update = data
                 .get(12..16)
                 .and_then(|s| s.try_into().ok())
@@ -259,13 +287,14 @@ pub fn run(
                 last_session_update = session_update;
                 last_full_frame = Instant::now();
                 pending_resync = false;
-                (u32::MAX, 0..data.len())
-            } else if let Some((off, len)) = telemetry.active_var_buf() {
-                (off as u32, off..off + len)
+                // tick_field_off = 0: session-info uses a static prefix; no TOCTOU check.
+                (u32::MAX, 0..data.len(), 0i32, 0usize)
+            } else if let Some((off, len, tick, tick_off)) = telemetry.active_var_buf() {
+                (off as u32, off..off + len, tick, tick_off)
             } else {
                 last_full_frame = Instant::now();
                 pending_resync = false;
-                (u32::MAX, 0..data.len())
+                (u32::MAX, 0..data.len(), 0i32, 0usize)
             }
         };
 
@@ -274,19 +303,64 @@ pub fn run(
         // the map skipping [4..8] so status stays 0 until the first partial frame
         // writes varBuf and then the header (status=1) — see invariant comment above.
         //
-        // Partial frames prepend the irsdk header so the target always writes
-        // current tickCounts. Without this, SimHub could read the wrong varBuf slot
-        // when iRacing rotates to a new ring position.
-        let payload: &[u8] = if buf_offset == u32::MAX {
+        // Partial frames: if delta is enabled and the target supports it, XOR the
+        // current payload against the previous one and set DELTA_BIT in buf_offset.
+        // Every keyframe_interval ticks (and whenever buf_offset==u32::MAX) a full
+        // keyframe is sent to prevent divergence from cumulative delta errors.
+        let (payload, is_delta, wire_buf_offset): (&[u8], bool, u32) = if buf_offset == u32::MAX {
             let prefix_end = session_info_end(data);
             partial_staging[..prefix_end].copy_from_slice(&data[..prefix_end]);
             partial_staging[4..8].copy_from_slice(&[0u8; 4]); // zero status — target skips [4..8]
-            &partial_staging[..prefix_end]
+            // Reset delta counter: next partial frame after this session-info is a keyframe.
+            tick_counter = 0;
+            (&partial_staging[..prefix_end], false, buf_offset)
         } else {
             let var_slice = &data[payload_slice];
+            let full_len = IRSDK_HEADER_SIZE + var_slice.len();
+            // Bounds guard: partial_staging is MAX_TELEMETRY_SIZE bytes. A malformed
+            // or unexpectedly large iRacing varBuf must not cause a panic on copy.
+            if full_len > partial_staging.len() {
+                eprintln!(
+                    "partial frame too large ({} + {} = {} bytes, max {}), skipping",
+                    IRSDK_HEADER_SIZE, var_slice.len(), full_len, partial_staging.len()
+                );
+                continue;
+            }
             partial_staging[..IRSDK_HEADER_SIZE].copy_from_slice(&data[..IRSDK_HEADER_SIZE]);
-            partial_staging[IRSDK_HEADER_SIZE..IRSDK_HEADER_SIZE + var_slice.len()].copy_from_slice(var_slice);
-            &partial_staging[..IRSDK_HEADER_SIZE + var_slice.len()]
+            partial_staging[IRSDK_HEADER_SIZE..full_len].copy_from_slice(var_slice);
+
+            // TOCTOU guard: `data` is a live pointer into iRacing's shared memory.
+            // If iRacing advanced tickCount while we were copying, the frame is torn.
+            // Re-read the tick field of the slot we selected; if it changed, skip.
+            let tick_after = data
+                .get(tick_field_off..tick_field_off + 4)
+                .and_then(|s| s.try_into().ok())
+                .map(i32::from_le_bytes)
+                .unwrap_or(tick_before);
+            if tick_after != tick_before {
+                stats.record_dropped(1);
+                continue;
+            }
+
+            let use_delta = !no_delta
+                && target_supports_delta
+                && keyframe_interval > 0
+                && tick_counter % keyframe_interval as u32 != 0;
+
+            if use_delta {
+                xor_delta(
+                    &partial_staging[..full_len],
+                    &prev_varbuf[..full_len],
+                    &mut delta_buf[..full_len],
+                );
+                prev_varbuf[..full_len].copy_from_slice(&partial_staging[..full_len]);
+                tick_counter = tick_counter.wrapping_add(1);
+                (&delta_buf[..full_len], true, buf_offset | DELTA_BIT)
+            } else {
+                prev_varbuf[..full_len].copy_from_slice(&partial_staging[..full_len]);
+                tick_counter = tick_counter.wrapping_add(1);
+                (&partial_staging[..full_len], false, buf_offset)
+            }
         };
 
         let compressed_len = match compress_into(payload, &mut compress_buf) {
@@ -301,12 +375,12 @@ pub fn run(
         let source_us = last_data.elapsed().as_micros() as u64;
 
         let is_full = buf_offset == u32::MAX;
-        match send_one(&mut sender, &compress_buf[..compressed_len], source_us, buf_offset) {
+        match send_one(&mut sender, &compress_buf[..compressed_len], source_us, wire_buf_offset) {
             Ok(_) => {
                 // Measured post-send for local stats: captures full source-side cost
                 // including the fragment loop and socket send calls.
                 let source_total_us = last_data.elapsed().as_micros() as u64;
-                stats.record(compressed_len, payload.len(), source_total_us, 0, is_full);
+                stats.record(compressed_len, payload.len(), source_total_us, 0, is_full, is_delta);
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 // Send buffer full — silently count as dropped; shown in the 5-s stats
@@ -319,10 +393,13 @@ pub fn run(
         // last_data was just set — no need for a fresh Instant::now() syscall here.
         last_heartbeat = last_data;
 
-        // Poll for resync requests from targets (non-blocking).
-        let mut tmp = [0u8; 1];
-        if socket.recv_from(&mut tmp).is_ok() {
+        // Poll for resync/capability packets from targets (non-blocking).
+        let mut cap_buf = [0u8; 2];
+        if socket.recv_from(&mut cap_buf).is_ok() {
             pending_resync = true;
+            if !no_delta {
+                target_supports_delta = cap_buf.get(1).map(|&b| b & 0x01 != 0).unwrap_or(false);
+            }
         }
 
         stats.maybe_print();

@@ -1,6 +1,7 @@
 use clap::Parser;
 use std::sync::mpsc;
 use teleport::{source, DEFAULT_MULTICAST, DEFAULT_PORT};
+use teleport::source::DEFAULT_KEYFRAME_INTERVAL;
 
 /// Read iRacing telemetry and broadcast it over UDP to a SimHub PC.
 #[derive(Parser)]
@@ -46,6 +47,18 @@ struct Args {
     /// only source needs this flag.
     #[arg(long, default_value_t = source::DEFAULT_DATAGRAM_SIZE)]
     datagram_size: usize,
+
+    /// Disable XOR-delta compression for partial frames. Delta is enabled by
+    /// default when the target supports it; use this flag to force full frames
+    /// on every tick (higher bandwidth, zero reconstruction risk).
+    #[arg(long)]
+    no_delta: bool,
+
+    /// Number of partial frames between full (non-delta) keyframes.
+    /// Lower values send more keyframes (safer on lossy links at the cost of
+    /// slightly higher bandwidth); higher values maximise delta savings.
+    #[arg(long, default_value_t = DEFAULT_KEYFRAME_INTERVAL)]
+    keyframe_interval: u16,
 }
 
 fn main() {
@@ -61,7 +74,7 @@ fn main() {
     let mode = if args.unicast { "unicast" } else { "multicast" };
     println!("source → {} ({})", args.target, mode);
 
-    if let Err(e) = source::run(&args.bind, &args.target, args.unicast, args.busy_wait, args.pin_core, args.high_priority, args.reconnect_timeout, args.datagram_size, rx) {
+    if let Err(e) = source::run(&args.bind, &args.target, args.unicast, args.busy_wait, args.pin_core, args.high_priority, args.reconnect_timeout, args.datagram_size, args.no_delta, args.keyframe_interval, rx) {
         eprintln!("error: {e}");
         std::process::exit(1);
     }

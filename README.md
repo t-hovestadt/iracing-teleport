@@ -61,6 +61,8 @@ See the [Direct Ethernet setup](#direct-ethernet-setup) section below.
 | `--group <ADDR>` | | ✓ | `239.255.0.1` | Multicast group to join |
 | `--busy-wait` | ✓ | ✓ | off | Spin instead of sleeping; eliminates OS scheduler wake-up jitter (~0–2 ms), costs one CPU core. On the iRacing PC only use if you have spare cores |
 | `--datagram-size <BYTES>` | ✓ | | `9000` | UDP payload bytes per fragment. Use `1472` on standard 1500-byte MTU networks (LAN, WiFi) to avoid IP fragmentation. Target auto-detects the sender's size |
+| `--no-delta` | ✓ | | off | Disable XOR-delta compression for partial frames; send full frames every tick (higher bandwidth, zero reconstruction risk) |
+| `--keyframe-interval <N>` | ✓ | | `60` | Partial frames between full (non-delta) keyframes when delta is enabled; lower values are safer on lossy links |
 | `--pin-core <N>` | ✓ | ✓ | off | Pin the worker thread to CPU core N (0-based) |
 | `--fanalab` | | ✓ | off | Spawn a dummy iRacingSim64DX11.exe so FanaLab detects iRacing and auto-loads per-car profiles |
 | `--reconnect-timeout <SECS>` | ✓ | | `10` | Seconds without telemetry data before closing and reconnecting to iRacing; increase if your simulator takes longer than 10 s between sessions |
@@ -72,12 +74,20 @@ See the [Direct Ethernet setup](#direct-ethernet-setup) section below.
 ## How it works
 
 - **source** maps the iRacing shared memory region, compresses each frame with LZ4, and sends it over UDP. It waits indefinitely for iRacing to start and reconnects automatically if iRacing closes.
-- **Each tick** sends only the ~5–15 KB variable buffer slice that actually changed, keeping per-frame bandwidth to ~0.5–1 Mbps at 60 Hz.
+- **Each tick** sends only the ~5–15 KB variable buffer slice that actually changed. When the target confirms delta support, **XOR-delta encoding** compresses consecutive partial frames against the previous one — iRacing's telemetry changes only a small fraction of bytes per tick, so delta frames typically compress 4–8× compared to raw partial frames, keeping bandwidth well under 0.5 Mbps at 60 Hz. A full keyframe is sent every 60 ticks (configurable with `--keyframe-interval`) to prevent divergence if a delta frame is lost.
 - **Session-info frames** (sent on session changes, on target resync, and every 10 s as a fallback) send the static prefix — irsdk header + variable descriptors + session YAML — compressed to ~60–150 KB. The status field is zeroed in the prefix; target writes varBuf first then the irsdk header on every partial frame, so `status=1` is never visible before varBuf is populated.
 - **target** receives, reassembles, and decompresses the data into a matching shared memory region on the SimHub PC, so SimHub sees iRacing as running locally. The map is created on first data arrival and closed cleanly if no data is received for 10 s.
+- **Capability negotiation**: target sends a 2-byte UDP packet (byte 0: resync flag; byte 1: capability bitfield, bit 0 = delta-capable) when it needs a session-info frame. source responds on the next tick and enables delta encoding when confirmed. Old 1-byte targets are treated as delta-incapable and receive full frames only.
 - Heartbeat packets keep the connection alive across loading screens and menus so SimHub doesn't disconnect mid-session.
 
-Both tools print a stats line every 5 s (`60 msg/s  0.48 Mbps  200/280/340 µs p50/p99/max`) and a summary on Ctrl-C.
+Both tools print a stats line every 5 s and a summary on Ctrl-C:
+
+```
+[source] 60.0 msg/s  0.47 Mbps  2.3x  12/18/45 µs p50/p99/max  0 dropped
+[target] 60.0 msg/s  0.47 Mbps  2.3x  14/22/48 µs p50/p99/max  0 dropped
+```
+
+The `2.3x` figure is the compression ratio (uncompressed ÷ compressed bytes). Delta frames typically reach 4–8× when only a small fraction of the variable buffer changes per tick.
 
 ---
 
@@ -114,7 +124,7 @@ Requires [Rust](https://rustup.rs) (stable).
 
 ```
 git clone https://github.com/t-hovestadt/iracing-teleport
-cd iracing-teleport/teleport
+cd iracing-teleport
 cargo build --release
 ```
 
@@ -225,7 +235,7 @@ Each telemetry frame is compressed with LZ4 and split into 9,000-byte UDP datagr
 | `source_us` | u64 | Microseconds spent on source side |
 | `sequence` | u32 | Monotonically increasing per message |
 | `payload_size` | u32 | Total compressed bytes across all fragments |
-| `buf_offset` | u32 | Byte offset to write decompressed data in the target map; `u32::MAX` = session-info frame (write at offset 0) |
+| `buf_offset` | u32 | Byte offset to write decompressed data in the target map; `u32::MAX` = session-info frame (write at offset 0); bit 31 set = XOR-delta frame, real offset = `buf_offset & ~(1 << 31)` |
 | `fragment` | u16 | 0-based index of this fragment |
 | `fragments` | u16 | Total fragment count for this sequence; `0` = heartbeat |
 
@@ -234,9 +244,11 @@ The receiver reassembles fragments out-of-order and discards duplicates. A new s
 ### Performance design
 
 - **Partial frames**: iRacing's header exposes a ring of up to 4 variable buffers (~5–15 KB each). source reads the highest-tick slot each frame and sends only that slice, cutting per-frame data from ~1.1 MB to ~5–15 KB and fragment count from ~23 to 1. Each partial frame includes the 112-byte irsdk header so target has current `tickCount` values and picks the right varBuf slot after a ring rotation.
+- **XOR-delta encoding**: when the target confirms delta support, source XORs the current varBuf payload against the previous one before compressing. iRacing telemetry changes only ~5% of bytes per tick, so the delta compresses 4–8× smaller than a raw partial frame. A full keyframe is sent every `--keyframe-interval` ticks (default 60) to prevent divergence if a delta is lost. target reconstructs by XORing the decompressed delta against its own `prev_varbuf`. Both sides reset to zeros on each session-info frame to stay in sync.
+- **Torn-frame detection (TOCTOU guard)**: `as_slice()` is a live pointer into iRacing's memory-mapped region. After copying a varBuf slot into the staging buffer, source re-reads that slot's `tickCount`. If it changed, iRacing overwrote the buffer mid-copy; the frame is silently dropped and counted as lost rather than forwarding corrupt data.
 - **Session-info frames**: sent on session changes, on target resync request, and every 10 s as a fallback. These send only the **static prefix** — irsdk header + variable descriptors + session YAML — compressed to ~60–150 KB (~7–17 fragments, down from ~20+ for the full map). The `status` field (bytes [4..8]) is zeroed before compressing. On the target, the prefix is written to the map skipping bytes [4..8], so the map's status stays at 0 (fresh) or its previous value (session update). `status=1` is written exclusively by the **partial frame handler**, after varBuf data is already in place.
 - **Write ordering on partial frames**: target writes varBuf data first, then the irsdk header last. The irsdk header contains `status=1` from iRacing's live data; writing it after varBuf means `status=1` is visible only once the variable data is already in place.
-- **Bidirectional resync**: target sends a 1-byte UDP packet to source when it needs a session-info frame; source responds on the next tick instead of waiting for the 10 s fallback. Requires source to bind to a known port (not ephemeral `:0`) so the request passes through the firewall — see [Direct Ethernet setup](#direct-ethernet-setup).
+- **Bidirectional resync with capability negotiation**: target sends a 2-byte UDP packet (byte 0: resync flag `0x01`; byte 1: capability bitfield, bit 0 = delta-capable) to source when it needs a session-info frame. source responds on the next tick and enables delta encoding when confirmed. Old 1-byte targets default to delta-incapable (no second byte → bit 0 = 0). Requires source to bind to a known port (not ephemeral `:0`) so the request passes through the firewall — see [Direct Ethernet setup](#direct-ethernet-setup).
 - **2 MB socket buffers** on both sides (via `socket2`) — the OS default of 64 KB drops all but the first 7 fragments of a session-info frame.
 - **Receiver bounds validation** — datagram headers are checked before any buffer allocation: `fragments` is capped at 256 and `payload_size` at the pre-allocated maximum. A malformed or spoofed packet on the LAN is silently discarded.
 - **Zero-allocation hot path** — compression and decompression write into pre-allocated buffers; no heap allocation per frame.
@@ -256,7 +268,10 @@ Rewritten from scratch based on [sklose/iracing-teleport](https://github.com/skl
 - **Partial frames**: sends only the active variable buffer (~5–15 KB) per frame instead of the full 1.1 MB map; latency drops from ~1.4 ms to ~200–500 µs on a typical LAN, ~13 µs end-to-end on a direct Ethernet link.
 - Each partial frame includes the 112-byte irsdk header so target has current `tickCount` values and picks the right varBuf slot after a ring rotation.
 - Session-info frames send only the static prefix (~60–150 KB compressed) with `status` zeroed; partial frames write varBuf first then the irsdk header last. `status=1` only becomes visible after varBuf is populated, so SimHub's independent `irsdk_header.status` poll never sees `status=1` with empty telemetry values.
-- **Bidirectional resync**: target sends a 1-byte UDP packet to source when it needs a session-info frame; source responds on the next tick instead of waiting for a fixed timer.
+- **XOR-delta encoding**: when the target confirms delta support, source XORs the current varBuf against the previous one before LZ4 compression. iRacing telemetry changes only ~5% of bytes per tick, so delta frames compress 4–8× smaller than raw partial frames. A full keyframe is sent every 60 ticks (configurable with `--keyframe-interval`) to prevent divergence. Both sides reset delta state to zeros on each session-info frame.
+- **Capability negotiation**: target's resync packet is 2 bytes — byte 1 is a bitfield (bit 0 = delta-capable). Old 1-byte targets are treated as delta-incapable and receive full frames only; no configuration required.
+- **Torn-frame detection**: source re-reads the active varBuf slot's `tickCount` after copying. If it changed, iRacing overwrote the buffer mid-copy; the torn frame is dropped rather than forwarded.
+- **Bidirectional resync**: target sends a UDP packet to source when it needs a session-info frame; source responds on the next tick instead of waiting for a fixed timer.
 - **Direct Ethernet support**: documented static IP setup, firewall rules, and bat files for point-to-point cable connections achieving ~13 µs end-to-end p50 (~8 µs network transit).
 - **MMCSS on target**: registers under the Windows "Games" multimedia task for reserved CPU time; skipped on source to avoid competing with iRacing's own registrations.
 - **NULL DACL shared memory**: target map and event created with explicit "allow all" security descriptor, matching iRacing's own setup, so SimHub and other apps can open the map regardless of elevation.
@@ -268,6 +283,7 @@ Rewritten from scratch based on [sklose/iracing-teleport](https://github.com/skl
 - Receive path uses `ptr::read_unaligned`; reading a packed struct through a reference is undefined behaviour when unaligned.
 - Receiver validates datagram header bounds before allocating — `fragments` and `payload_size` are capped so a malformed packet cannot cause an out-of-memory crash.
 - Pre-allocated compression buffer; the original allocated a new `Vec` per frame.
+- **`--reconnect-timeout`**: configurable seconds before source closes and reconnects to iRacing (default 10 s); increase for simulators with long session reload times.
 - source waits indefinitely for iRacing to start; the original exited after 5 seconds.
 - Shared memory region size read via `VirtualQuery` rather than a hardcoded constant.
 - `Drop` guards with null and `INVALID_HANDLE_VALUE` checks on all handles.
