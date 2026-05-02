@@ -27,6 +27,11 @@ struct Args {
     /// is dedicated to streaming with no game running.
     #[arg(long)]
     high_priority: bool,
+
+    /// Seconds without telemetry data before closing and reconnecting to iRacing.
+    /// Increase if iRacing takes longer than 10 s between sessions on your machine.
+    #[arg(long, default_value_t = source::DEFAULT_RECONNECT_TIMEOUT_SECS)]
+    reconnect_timeout: u64,
 }
 
 fn main() {
@@ -42,7 +47,7 @@ fn main() {
     let mode = if args.unicast { "unicast" } else { "multicast" };
     println!("source → {} ({})", args.target, mode);
 
-    if let Err(e) = source::run(&args.bind, &args.target, args.unicast, args.pin_core, args.high_priority, rx) {
+    if let Err(e) = source::run(&args.bind, &args.target, args.unicast, args.pin_core, args.high_priority, args.reconnect_timeout, rx) {
         eprintln!("error: {e}");
         std::process::exit(1);
     }

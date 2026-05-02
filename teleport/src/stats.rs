@@ -10,6 +10,7 @@ pub struct Stats {
     // Current 5-second window.
     updates: u64,
     bytes: u64,
+    uncompressed_bytes: u64,
     dropped: u64,
     partial_latencies: Vec<u64>,
     full_latencies: Vec<u64>,
@@ -19,6 +20,7 @@ pub struct Stats {
     // Lifetime totals — used for the shutdown summary.
     lifetime_updates: u64,
     lifetime_bytes: u64,
+    lifetime_uncompressed_bytes: u64,
     lifetime_dropped: u64,
     lifetime_latency_sum: u128,
     lifetime_latency_min: u64,
@@ -34,12 +36,14 @@ impl Stats {
             window_start: now,
             updates: 0,
             bytes: 0,
+            uncompressed_bytes: 0,
             dropped: 0,
             partial_latencies: Vec::with_capacity(512),
             full_latencies: Vec::with_capacity(8),
             source_latencies: Vec::with_capacity(512),
             lifetime_updates: 0,
             lifetime_bytes: 0,
+            lifetime_uncompressed_bytes: 0,
             lifetime_dropped: 0,
             lifetime_latency_sum: 0,
             lifetime_latency_min: u64::MAX,
@@ -49,15 +53,18 @@ impl Stats {
 
     /// Record one delivered frame.
     ///
+    /// `compressed` — compressed byte count sent/received on the wire.
+    /// `uncompressed` — decompressed byte count (payload before compression).
     /// `source_us` — microseconds spent compressing on the source side
     ///   (carried in the wire header).
     /// `transit_us` — microseconds from first fragment arrival to after
     ///   decompression on the target side; pass `0` on the source.
     /// `is_full` — true for full-map frames, false for partial varBuf frames.
-    pub fn record(&mut self, bytes: usize, source_us: u64, transit_us: u64, is_full: bool) {
+    pub fn record(&mut self, compressed: usize, uncompressed: usize, source_us: u64, transit_us: u64, is_full: bool) {
         let total_us = source_us + transit_us;
         self.updates += 1;
-        self.bytes += bytes as u64;
+        self.bytes += compressed as u64;
+        self.uncompressed_bytes += uncompressed as u64;
 
         if is_full {
             self.full_latencies.push(total_us);
@@ -69,7 +76,8 @@ impl Stats {
         }
 
         self.lifetime_updates += 1;
-        self.lifetime_bytes += bytes as u64;
+        self.lifetime_bytes += compressed as u64;
+        self.lifetime_uncompressed_bytes += uncompressed as u64;
         self.lifetime_latency_sum += total_us as u128;
         if total_us < self.lifetime_latency_min {
             self.lifetime_latency_min = total_us;
@@ -92,6 +100,11 @@ impl Stats {
         let elapsed_s = elapsed.as_secs_f64();
         let rate = self.updates as f64 / elapsed_s;
         let mbps = (self.bytes as f64 * 8.0) / (elapsed_s * 1_000_000.0);
+        let ratio = if self.bytes > 0 {
+            self.uncompressed_bytes as f64 / self.bytes as f64
+        } else {
+            0.0
+        };
 
         let (pp50, pp99, pmax) = percentiles(&mut self.partial_latencies);
 
@@ -101,7 +114,7 @@ impl Stats {
         let (sp50, sp99, _) = percentiles(&mut self.source_latencies);
 
         let mut line = format!(
-            "[{name}] {rate:.1} msg/s  {mbps:.2} Mbps  {pp50}/{pp99}/{pmax} µs p50/p99/max",
+            "[{name}] {rate:.1} msg/s  {mbps:.2} Mbps  {ratio:.1}x  {pp50}/{pp99}/{pmax} µs p50/p99/max",
             name = self.name,
         );
         if full_count > 0 {
@@ -115,6 +128,7 @@ impl Stats {
 
         self.updates = 0;
         self.bytes = 0;
+        self.uncompressed_bytes = 0;
         self.dropped = 0;
         self.partial_latencies.clear();
         self.full_latencies.clear();

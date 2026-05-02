@@ -23,7 +23,10 @@ mod imp {
 
     impl HighResTimer {
         pub fn acquire() -> Self {
-            unsafe { timeBeginPeriod(1) };
+            let result = unsafe { timeBeginPeriod(1) };
+            if result != 0 {
+                eprintln!("timeBeginPeriod(1) failed (code {result}); timer resolution stays at ~15.6 ms");
+            }
             Self
         }
     }

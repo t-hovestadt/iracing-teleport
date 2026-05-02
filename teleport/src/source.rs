@@ -9,7 +9,7 @@ use crate::protocol::Sender;
 use crate::stats::Stats;
 use crate::telemetry::{IRSDK_HEADER_SIZE, MAX_TELEMETRY_SIZE, Telemetry, TelemetryError, TelemetryProvider};
 
-const RECONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+pub const DEFAULT_RECONNECT_TIMEOUT_SECS: u64 = 10;
 const POLL_INTERVAL_MS: u32 = 200;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 // Fallback interval for sending a session-info frame when the bidirectional
@@ -50,8 +50,10 @@ pub fn run(
     unicast: bool,
     pin_core: Option<usize>,
     high_priority: bool,
+    reconnect_timeout_secs: u64,
     shutdown: mpsc::Receiver<()>,
 ) -> std::io::Result<()> {
+    let reconnect_timeout = Duration::from_secs(reconnect_timeout_secs);
     let _timer = HighResTimer::acquire();
     boost_thread_priority();
     if high_priority {
@@ -151,7 +153,7 @@ pub fn run(
                 last_heartbeat = Instant::now();
             }
 
-            if last_data.elapsed() >= RECONNECT_TIMEOUT {
+            if last_data.elapsed() >= reconnect_timeout {
                 if got_data {
                     println!("iRacing stopped responding — waiting to reconnect...");
                 }
@@ -276,7 +278,13 @@ pub fn run(
                 // Measured post-send for local stats: captures full source-side cost
                 // including the fragment loop and socket send calls.
                 let source_total_us = last_data.elapsed().as_micros() as u64;
-                stats.record(compressed_len, source_total_us, 0, is_full);
+                stats.record(compressed_len, payload.len(), source_total_us, 0, is_full);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                // Send buffer full — silently count as dropped; shown in the 5-s stats
+                // window. Very rare with the 2 MB send buffer but better than printing
+                // every occurrence or losing the drop silently.
+                stats.record_dropped(1);
             }
             Err(e) => eprintln!("send failed: {e}"),
         }
