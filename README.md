@@ -59,7 +59,7 @@ See the [Direct Ethernet setup](#direct-ethernet-setup) section below.
 | `--target <ADDR>` | ✓ | | `239.255.0.1:5000` | Destination (multicast group:port or unicast IP:port) |
 | `--unicast` | ✓ | ✓ | off | Send/receive directly host-to-host instead of multicast |
 | `--group <ADDR>` | | ✓ | `239.255.0.1` | Multicast group to join |
-| `--busy-wait` | ✓ | ✓ | off | Spin instead of sleeping; eliminates OS scheduler wake-up jitter (~0–2 ms), costs one CPU core. On the iRacing PC only use if you have spare cores |
+| `--busy-wait` | ✓ | ✓ | off | Spin instead of sleeping; eliminates OS scheduler wake-up jitter (~0–2 ms), costs one CPU core. Safe on the SimHub PC; on the iRacing PC only use if you have spare cores (competes with iRacing for CPU) |
 | `--datagram-size <BYTES>` | ✓ | | `9000` | UDP payload bytes per fragment. Use `1472` on standard 1500-byte MTU networks (LAN, WiFi) to avoid IP fragmentation. Target auto-detects the sender's size |
 | `--no-delta` | ✓ | | off | Disable XOR-delta compression for partial frames; send full frames every tick (higher bandwidth, zero reconstruction risk) |
 | `--keyframe-interval <N>` | ✓ | | `60` | Partial frames between full (non-delta) keyframes when delta is enabled; lower values are safer on lossy links |
@@ -84,7 +84,7 @@ Both tools print a stats line every 5 s and a summary on Ctrl-C:
 
 ```
 [source] 60.0 msg/s  0.47 Mbps  2.3x  12/18/45 µs p50/p99/max  0 dropped
-[target] 60.0 msg/s  0.47 Mbps  2.3x  14/22/48 µs p50/p99/max  0 dropped
+[target] 60.0 msg/s  0.47 Mbps  2.3x  14/22/48 µs p50/p99/max  src: 5/9 µs p50/p99  98% delta  0 dropped
 ```
 
 The `2.3x` figure is the compression ratio (uncompressed ÷ compressed bytes). Delta frames typically reach 4–8× when only a small fraction of the variable buffer changes per tick.
@@ -211,7 +211,7 @@ target.exe --unicast --bind 192.168.50.2:5000
 pause
 ```
 
-> **Why `--bind 192.168.50.1:5000` on source?** Source needs to receive 1-byte resync requests from target so it can send a fresh session-info frame immediately on first connect. If source binds to an ephemeral port (`:0`), Windows assigns a random port number that isn't covered by the port 5000 firewall rule, so resync is silently blocked and SimHub takes up to 10 seconds to activate instead of ~1 second.
+> **Why `--bind 192.168.50.1:5000` on source?** Source needs to receive 2-byte resync packets from target so it can send a fresh session-info frame immediately on first connect. If source binds to an ephemeral port (`:0`), Windows assigns a random port number that isn't covered by the port 5000 firewall rule, so resync is silently blocked and SimHub takes up to 10 seconds to activate instead of ~1 second.
 
 **Troubleshooting**
 
