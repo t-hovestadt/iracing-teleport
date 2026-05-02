@@ -32,6 +32,20 @@ struct Args {
     /// Increase if iRacing takes longer than 10 s between sessions on your machine.
     #[arg(long, default_value_t = source::DEFAULT_RECONNECT_TIMEOUT_SECS)]
     reconnect_timeout: u64,
+
+    /// Spin on WaitForSingleObject(0) instead of sleeping. Eliminates OS
+    /// scheduler wake-up jitter (~0–2 ms) but burns one CPU core. On the
+    /// iRacing PC this competes with iRacing; only use on a dedicated PC or
+    /// if you have spare cores.
+    #[arg(long)]
+    busy_wait: bool,
+
+    /// UDP datagram size in bytes. Default (9000) works on jumbo-frame links.
+    /// Set to 1472 on standard 1500-byte MTU networks (LAN, WiFi) to avoid
+    /// IP fragmentation. Target auto-detects whatever the source uses, so
+    /// only source needs this flag.
+    #[arg(long, default_value_t = source::DEFAULT_DATAGRAM_SIZE)]
+    datagram_size: usize,
 }
 
 fn main() {
@@ -47,7 +61,7 @@ fn main() {
     let mode = if args.unicast { "unicast" } else { "multicast" };
     println!("source → {} ({})", args.target, mode);
 
-    if let Err(e) = source::run(&args.bind, &args.target, args.unicast, args.pin_core, args.high_priority, args.reconnect_timeout, rx) {
+    if let Err(e) = source::run(&args.bind, &args.target, args.unicast, args.busy_wait, args.pin_core, args.high_priority, args.reconnect_timeout, args.datagram_size, rx) {
         eprintln!("error: {e}");
         std::process::exit(1);
     }

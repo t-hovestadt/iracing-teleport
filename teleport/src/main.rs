@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use teleport::{source, target, DEFAULT_MULTICAST, DEFAULT_PORT};
-use teleport::source::DEFAULT_RECONNECT_TIMEOUT_SECS;
+use teleport::source::{DEFAULT_RECONNECT_TIMEOUT_SECS, DEFAULT_DATAGRAM_SIZE};
 use std::sync::mpsc;
 
 /// Stream iRacing telemetry over the network so SimHub (or any iRacing-compatible
@@ -42,6 +42,17 @@ enum Command {
         /// Increase if iRacing takes longer than 10 s between sessions on your machine.
         #[arg(long, default_value_t = DEFAULT_RECONNECT_TIMEOUT_SECS)]
         reconnect_timeout: u64,
+
+        /// Spin on WaitForSingleObject(0) instead of sleeping. Eliminates OS
+        /// scheduler wake-up jitter (~0–2 ms) but burns one CPU core.
+        #[arg(long)]
+        busy_wait: bool,
+
+        /// UDP datagram size in bytes. Default (9000) for jumbo-frame links.
+        /// Set to 1472 on standard 1500-byte MTU networks to avoid IP fragmentation.
+        /// Target auto-detects the sender's fragment size — only source needs this.
+        #[arg(long, default_value_t = DEFAULT_DATAGRAM_SIZE)]
+        datagram_size: usize,
     },
 
     /// Receive telemetry and expose it as a local iRacing memory map.
@@ -100,10 +111,10 @@ fn main() {
     .expect("failed to install Ctrl-C handler");
 
     let result = match cli.command {
-        Command::Source { bind, target, unicast, pin_core, high_priority, reconnect_timeout } => {
+        Command::Source { bind, target, unicast, busy_wait, pin_core, high_priority, reconnect_timeout, datagram_size } => {
             let mode = if unicast { "unicast" } else { "multicast" };
             println!("source → {target} ({mode})");
-            source::run(&bind, &target, unicast, pin_core, high_priority, reconnect_timeout, rx)
+            source::run(&bind, &target, unicast, busy_wait, pin_core, high_priority, reconnect_timeout, datagram_size, rx)
         }
         Command::Target { bind, group, unicast, busy_wait, pin_core, fanalab, stale_timeout, high_priority } => {
             let dest = if unicast { "unicast" } else { group.as_str() };

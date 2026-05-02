@@ -1,6 +1,11 @@
 use std::io;
 
-/// Max UDP datagram size — stays under typical jumbo-frame MTU with headroom for IP/UDP headers.
+/// Default UDP datagram payload size (bytes). Chosen to fit inside a 9000-byte
+/// jumbo-frame MTU (9000 - 20 IP - 8 UDP = 8972 usable, minus 24-byte protocol
+/// header leaves 8948 payload bytes, but we round up to 9000 to match the
+/// historical behaviour where the OS handles any minor IP fragmentation on
+/// non-jumbo links). On standard 1500-byte MTU networks use `--datagram-size 1472`
+/// to avoid IP fragmentation.
 pub const MAX_DATAGRAM_SIZE: usize = 9_000;
 
 const HEADER_SIZE: usize = std::mem::size_of::<Header>();
@@ -42,6 +47,8 @@ const MAX_FRAGMENTS: u16 = 256;
 pub struct Sender {
     sequence: u32,
     buf: Vec<u8>,
+    /// Application-level payload bytes per datagram (= datagram_size - HEADER_SIZE).
+    payload_per_datagram: usize,
 }
 
 impl Default for Sender {
@@ -52,9 +59,18 @@ impl Default for Sender {
 
 impl Sender {
     pub fn new() -> Self {
+        Self::with_datagram_size(MAX_DATAGRAM_SIZE)
+    }
+
+    /// Create a sender that fits each fragment into `datagram_size` UDP payload bytes.
+    /// Use `MAX_DATAGRAM_SIZE` (9000) for jumbo-frame links; use 1472 for standard
+    /// 1500-byte MTU networks to avoid IP fragmentation.
+    pub fn with_datagram_size(datagram_size: usize) -> Self {
+        let datagram_size = datagram_size.max(HEADER_SIZE + 1); // at least 1 payload byte
         Self {
             sequence: 0,
-            buf: vec![0u8; MAX_DATAGRAM_SIZE],
+            buf: vec![0u8; datagram_size],
+            payload_per_datagram: datagram_size - HEADER_SIZE,
         }
     }
 
@@ -68,14 +84,14 @@ impl Sender {
         F: FnMut(&[u8]) -> io::Result<()>,
     {
         let total = data.len();
-        let n_fragments = total.div_ceil(MAX_PAYLOAD_PER_DATAGRAM);
+        let n_fragments = total.div_ceil(self.payload_per_datagram);
         if n_fragments == 0 || n_fragments > u16::MAX as usize {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "payload too large or empty"));
         }
 
         for i in 0..n_fragments {
-            let offset = i * MAX_PAYLOAD_PER_DATAGRAM;
-            let chunk = &data[offset..(offset + MAX_PAYLOAD_PER_DATAGRAM).min(total)];
+            let offset = i * self.payload_per_datagram;
+            let chunk = &data[offset..(offset + self.payload_per_datagram).min(total)];
 
             let hdr = Header {
                 sequence: self.sequence,
@@ -147,6 +163,11 @@ pub struct Receiver {
     total_frags: u16,
     got_frags: u16,
     payload_size: usize,
+    /// Fragment payload size auto-detected from the first non-final datagram.
+    /// All non-final fragments carry exactly this many bytes; the final fragment
+    /// carries the remainder. Detected rather than hardcoded so the receiver
+    /// works transparently with any sender `--datagram-size` setting.
+    detected_frag_size: usize,
     pub last_source_us: u64,
     pub last_fragment_count: u16,
     /// Number of sequences abandoned mid-reassembly due to a new sequence arriving.
@@ -165,6 +186,7 @@ impl Receiver {
             total_frags: 0,
             got_frags: 0,
             payload_size: 0,
+            detected_frag_size: 0,
             last_source_us: 0,
             last_fragment_count: 0,
             dropped_sequences: 0,
@@ -218,7 +240,20 @@ impl Receiver {
         if data.len() > MAX_PAYLOAD_PER_DATAGRAM {
             return Ingested { new_seq: first_frag, ..Ingested::default() };
         }
-        let dest_offset = idx * MAX_PAYLOAD_PER_DATAGRAM;
+
+        // Auto-detect the sender's fragment payload size from any non-final fragment.
+        // All non-final fragments carry the same number of bytes (the sender's
+        // payload_per_datagram). The final fragment carries the remainder and may be
+        // shorter. Single-fragment messages always write at dest_offset=0 regardless.
+        if idx < self.total_frags as usize - 1 && self.detected_frag_size == 0 {
+            self.detected_frag_size = data.len();
+        }
+        let frag_size = if self.detected_frag_size > 0 {
+            self.detected_frag_size
+        } else {
+            MAX_PAYLOAD_PER_DATAGRAM // fallback before first non-final fragment seen
+        };
+        let dest_offset = idx * frag_size;
         if dest_offset + data.len() > self.buf.len() {
             return Ingested { new_seq: first_frag, ..Ingested::default() };
         }
@@ -262,6 +297,7 @@ impl Receiver {
         self.got_frags = 0;
         self.payload_size = hdr.payload_size as usize;
         self.last_buf_offset = hdr.buf_offset;
+        self.detected_frag_size = 0; // re-detect on each new sequence
 
         self.received.clear();
         self.received.resize(hdr.fragments as usize, false);
@@ -427,5 +463,130 @@ mod tests {
             }
         }
         assert_eq!(assembled.unwrap(), payload);
+    }
+
+    // ── Custom datagram-size tests ────────────────────────────────────────────
+
+    /// Sender with a small datagram size (e.g. 1472 bytes for 1500-MTU networks)
+    /// should fragment and reassemble correctly. Receiver auto-detects the fragment
+    /// size from non-final fragments.
+    #[test]
+    fn small_datagram_size_round_trip() {
+        // Slightly larger than one 1448-byte payload to force multi-fragment.
+        let payload: Vec<u8> = (0..3000).map(|i| (i % 197) as u8).collect();
+        let datagram_size = 1472; // standard 1500-MTU UDP payload limit
+        let mut sender = Sender::with_datagram_size(datagram_size);
+        let mut datagrams = Vec::new();
+        let frags = sender
+            .send(&payload, 0, u32::MAX, |d| {
+                // Every datagram must fit within the configured datagram_size.
+                assert!(d.len() <= datagram_size, "datagram too large: {}", d.len());
+                datagrams.push(d.to_vec());
+                Ok(())
+            })
+            .unwrap();
+        assert!(frags >= 2, "expected multiple fragments, got {frags}");
+
+        let mut receiver = Receiver::new(payload.len() + datagram_size);
+        let mut result = None;
+        for dg in &datagrams {
+            if let Some(out) = receiver.ingest(dg).assembled {
+                result = Some(out.to_vec());
+            }
+        }
+        assert_eq!(result.expect("never assembled"), payload);
+    }
+
+    /// Same data should round-trip correctly regardless of which fragment
+    /// size the sender chose, even when the receiver starts with no prior
+    /// knowledge of the sender's datagram size.
+    #[test]
+    fn varying_datagram_sizes() {
+        for &dsize in &[256usize, 512, 1472, 4096, MAX_DATAGRAM_SIZE] {
+            let payload: Vec<u8> = (0..dsize * 3 / 2).map(|i| (i % 211) as u8).collect();
+            let mut sender = Sender::with_datagram_size(dsize);
+            let mut datagrams = Vec::new();
+            sender
+                .send(&payload, 0, u32::MAX, |d| {
+                    datagrams.push(d.to_vec());
+                    Ok(())
+                })
+                .unwrap();
+            let mut receiver = Receiver::new(payload.len() + dsize);
+            let mut result = None;
+            for dg in &datagrams {
+                if let Some(out) = receiver.ingest(dg).assembled {
+                    result = Some(out.to_vec());
+                }
+            }
+            assert_eq!(
+                result.expect("never assembled"),
+                payload,
+                "failed for datagram_size={dsize}"
+            );
+        }
+    }
+
+    /// Receiver correctly handles LZ4-compressed end-to-end pipeline:
+    /// compress → fragment → reassemble → decompress → original data.
+    #[test]
+    fn lz4_round_trip_through_protocol() {
+        use lz4_flex::block::{compress_into, decompress_into, get_maximum_output_size};
+
+        let original: Vec<u8> = (0..12_000).map(|i| (i % 13) as u8).collect();
+        let mut compressed = vec![0u8; get_maximum_output_size(original.len())];
+        let compressed_len = compress_into(&original, &mut compressed).unwrap();
+        let compressed = &compressed[..compressed_len];
+
+        let mut sender = Sender::new();
+        let mut datagrams = Vec::new();
+        sender
+            .send(compressed, 99, 0x4000u32, |d| {
+                datagrams.push(d.to_vec());
+                Ok(())
+            })
+            .unwrap();
+
+        let mut receiver = Receiver::new(compressed.len() + MAX_PAYLOAD_PER_DATAGRAM);
+        let mut assembled_compressed: Option<Vec<u8>> = None;
+        for dg in &datagrams {
+            let res = receiver.ingest(dg);
+            if let Some(data) = res.assembled {
+                assembled_compressed = Some(data.to_vec());
+            }
+        }
+        let assembled = assembled_compressed.expect("never assembled");
+        assert_eq!(assembled, compressed, "protocol round-trip corrupted data");
+
+        let mut decompressed = vec![0u8; original.len()];
+        decompress_into(&assembled, &mut decompressed).expect("decompression failed");
+        assert_eq!(decompressed, original);
+        assert_eq!(receiver.last_source_us, 99);
+        assert_eq!(receiver.last_buf_offset, 0x4000u32);
+    }
+
+    /// Session-sequence counter increments across successive sends; the
+    /// receiver discards any new sequence that starts before the previous one
+    /// completes (dropped_sequences tracks this).
+    #[test]
+    fn dropped_sequence_counted() {
+        let large: Vec<u8> = vec![0u8; MAX_PAYLOAD_PER_DATAGRAM * 3];
+        let mut sender = Sender::new();
+        let mut datagrams_a = Vec::new();
+        sender.send(&large, 0, u32::MAX, |d| { datagrams_a.push(d.to_vec()); Ok(()) }).unwrap();
+        let mut datagrams_b = Vec::new();
+        sender.send(&large, 0, u32::MAX, |d| { datagrams_b.push(d.to_vec()); Ok(()) }).unwrap();
+
+        let mut receiver = Receiver::new(large.len() + MAX_PAYLOAD_PER_DATAGRAM);
+        // Deliver only the first fragment of sequence A, then all of sequence B.
+        receiver.ingest(&datagrams_a[0]);
+        let mut assembled = false;
+        for dg in &datagrams_b {
+            if receiver.ingest(dg).assembled.is_some() {
+                assembled = true;
+            }
+        }
+        assert!(assembled, "sequence B should assemble");
+        assert_eq!(receiver.dropped_sequences, 1, "sequence A should be counted as dropped");
     }
 }
