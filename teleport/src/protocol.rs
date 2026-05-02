@@ -184,7 +184,9 @@ pub struct Ingested<'a> {
 
 pub struct Receiver {
     buf: Vec<u8>,
-    received: Vec<bool>,
+    /// Inline bit-vector: element `i` is true once fragment `i` has arrived.
+    /// Fixed size avoids a heap allocation on every sequence reset.
+    received: [bool; MAX_FRAGMENTS as usize],
     max_payload: usize,
     current_seq: Option<u32>,
     total_frags: u16,
@@ -206,8 +208,10 @@ pub struct Receiver {
 impl Receiver {
     pub fn new(max_payload: usize) -> Self {
         Self {
-            buf: Vec::with_capacity(max_payload),
-            received: Vec::new(),
+            // Pre-allocate the full reassembly buffer so reset() never
+            // reallocates; ingest() overwrites bytes before returning them.
+            buf: vec![0u8; max_payload],
+            received: [false; MAX_FRAGMENTS as usize],
             max_payload,
             current_seq: None,
             total_frags: 0,
@@ -281,6 +285,8 @@ impl Receiver {
             MAX_PAYLOAD_PER_DATAGRAM // fallback before first non-final fragment seen
         };
         let dest_offset = idx * frag_size;
+        // buf.len() == max_payload always (pre-allocated in new()); payload_size ≤
+        // max_payload is enforced in reset(), so valid fragments always fit.
         if dest_offset + data.len() > self.buf.len() {
             return Ingested { new_seq: first_frag, ..Ingested::default() };
         }
@@ -326,18 +332,12 @@ impl Receiver {
         self.last_buf_offset = hdr.buf_offset;
         self.detected_frag_size = 0; // re-detect on each new sequence
 
-        self.received.clear();
-        self.received.resize(hdr.fragments as usize, false);
-
-        // Avoid O(n) zero-fill when shrinking: truncate leaves existing bytes in
-        // place, and they will be overwritten by ingest() before being read back.
-        // Only grow (with zeroing) when the new sequence needs more space.
-        let new_size = hdr.payload_size as usize;
-        if new_size > self.buf.len() {
-            self.buf.resize(new_size, 0);
-        } else {
-            self.buf.truncate(new_size);
-        }
+        // Zero only the slots that will be used; the fixed array avoids any
+        // heap allocation and fill(false) on ≤ 256 bytes is a single memset.
+        self.received[..hdr.fragments as usize].fill(false);
+        // buf is pre-allocated to max_payload in new() and never resized;
+        // payload_size tracks the valid region returned by assembled.
+        // Bytes beyond payload_size are stale but never read back.
     }
 }
 

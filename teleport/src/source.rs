@@ -164,6 +164,11 @@ pub fn run(
     // Counts partial frames sent; resets to 0 after each session-info frame so
     // the first partial frame after a session-info is always a keyframe.
     let mut tick_counter: u32 = 0;
+    // Last varBuf tickCount successfully sent. -1 = none yet. Duplicate ticks
+    // (iRacing signalled but didn't advance the counter, e.g. during loading
+    // screens or sub-60 Hz operation) are skipped to avoid redundant
+    // compress+send. Reset alongside tick_counter on reconnect and session change.
+    let mut last_tick: i32 = -1;
 
     loop {
         if shutdown.try_recv().is_ok() {
@@ -206,9 +211,10 @@ pub fn run(
                 last_full_frame = Instant::now() - FULL_FRAME_INTERVAL;
                 // Reset delta state: target_supports_delta until we hear a new
                 // capability packet; tick_counter so the first partial frame after
-                // reconnect is a keyframe.
+                // reconnect is a keyframe; last_tick so the first varBuf is always sent.
                 target_supports_delta = false;
                 tick_counter = 0;
+                last_tick = -1;
                 telemetry = loop {
                     match try_open(&shutdown)? {
                         OpenResult::Connected(t) => break t,
@@ -311,8 +317,10 @@ pub fn run(
             let prefix_end = session_info_end(data);
             partial_staging[..prefix_end].copy_from_slice(&data[..prefix_end]);
             partial_staging[4..8].copy_from_slice(&[0u8; 4]); // zero status — target skips [4..8]
-            // Reset delta counter: next partial frame after this session-info is a keyframe.
+            // Reset counters: next partial frame after this session-info is a keyframe,
+            // and last_tick is invalid because the new session's tickCount sequence restarts.
             tick_counter = 0;
+            last_tick = -1;
             (&partial_staging[..prefix_end], false, buf_offset)
         } else {
             let var_slice = &data[payload_slice];
@@ -341,6 +349,15 @@ pub fn run(
                 stats.record_dropped(1);
                 continue;
             }
+
+            // Duplicate-tick guard: iRacing signalled the data-ready event but the
+            // varBuf slot's tickCount hasn't advanced since the last frame we sent.
+            // Happens during loading screens and sub-60 Hz operation. Skip compress+
+            // send to avoid redundant network traffic.
+            if tick_before == last_tick {
+                continue;
+            }
+            last_tick = tick_before;
 
             let use_delta = !no_delta
                 && target_supports_delta
@@ -377,10 +394,10 @@ pub fn run(
         let is_full = buf_offset == u32::MAX;
         match send_one(&mut sender, &compress_buf[..compressed_len], source_us, wire_buf_offset) {
             Ok(_) => {
-                // Measured post-send for local stats: captures full source-side cost
-                // including the fragment loop and socket send calls.
-                let source_total_us = last_data.elapsed().as_micros() as u64;
-                stats.record(compressed_len, payload.len(), source_total_us, 0, is_full, is_delta);
+                // Reuse the pre-send timestamp for stats: send itself is sub-µs
+                // with the 2 MB socket buffer, so the difference from actual
+                // post-send time is negligible. Saves one QPC syscall per tick.
+                stats.record(compressed_len, payload.len(), source_us, 0, is_full, is_delta);
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 // Send buffer full — silently count as dropped; shown in the 5-s stats
