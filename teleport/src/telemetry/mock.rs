@@ -11,7 +11,9 @@ impl TelemetryProvider for MockTelemetry {
     }
 
     fn create(size: usize) -> Result<Self, TelemetryError> {
-        Ok(Self { data: vec![0u8; size] })
+        Ok(Self {
+            data: vec![0u8; size],
+        })
     }
 
     fn wait_for_data(&self, _timeout_ms: u32) -> bool {

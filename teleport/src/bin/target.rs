@@ -47,7 +47,9 @@ struct Args {
 fn main() {
     // When spawned as a FanaLab compatibility stub, just park until killed.
     if std::env::args().any(|a| a == "--fanalab-stub") {
-        loop { std::thread::park(); }
+        loop {
+            std::thread::park();
+        }
     }
 
     let args = Args::parse();
@@ -59,7 +61,11 @@ fn main() {
     })
     .expect("failed to install Ctrl-C handler");
 
-    let dest = if args.unicast { "unicast" } else { args.group.as_str() };
+    let dest = if args.unicast {
+        "unicast"
+    } else {
+        args.group.as_str()
+    };
     let mode = if args.unicast { "unicast" } else { "multicast" };
     println!("target ← {dest} ({mode})");
 

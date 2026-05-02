@@ -10,8 +10,8 @@ mod imp {
     use windows_sys::Win32::Media::{timeBeginPeriod, timeEndPeriod};
     use windows_sys::Win32::System::Threading::{
         AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW, GetCurrentProcess,
-        GetCurrentThread, HIGH_PRIORITY_CLASS, SetPriorityClass, SetThreadAffinityMask,
-        SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
+        GetCurrentThread, SetPriorityClass, SetThreadAffinityMask, SetThreadPriority,
+        HIGH_PRIORITY_CLASS, THREAD_PRIORITY_ABOVE_NORMAL,
     };
 
     /// RAII guard that requests 1 ms Windows timer resolution for the lifetime
@@ -25,7 +25,9 @@ mod imp {
         pub fn acquire() -> Self {
             let result = unsafe { timeBeginPeriod(1) };
             if result != 0 {
-                eprintln!("timeBeginPeriod(1) failed (code {result}); timer resolution stays at ~15.6 ms");
+                eprintln!(
+                    "timeBeginPeriod(1) failed (code {result}); timer resolution stays at ~15.6 ms"
+                );
             }
             Self
         }
@@ -53,8 +55,7 @@ mod imp {
         pub fn acquire() -> Option<Self> {
             let task: Vec<u16> = "Games\0".encode_utf16().collect();
             let mut task_index = 0u32;
-            let handle =
-                unsafe { AvSetMmThreadCharacteristicsW(task.as_ptr(), &mut task_index) };
+            let handle = unsafe { AvSetMmThreadCharacteristicsW(task.as_ptr(), &mut task_index) };
             if handle == 0 {
                 eprintln!("MMCSS registration failed (continuing without it)");
                 None
@@ -105,15 +106,21 @@ mod imp {
 mod imp {
     pub struct HighResTimer;
     impl HighResTimer {
-        pub fn acquire() -> Self { Self }
+        pub fn acquire() -> Self {
+            Self
+        }
     }
     pub struct MmcssGuard;
     impl MmcssGuard {
-        pub fn acquire() -> Option<Self> { Some(Self) }
+        pub fn acquire() -> Option<Self> {
+            Some(Self)
+        }
     }
     pub fn boost_thread_priority() {}
     pub fn set_high_priority() {}
     pub fn pin_thread_to_core(_core: usize) {}
 }
 
-pub use imp::{HighResTimer, MmcssGuard, boost_thread_priority, pin_thread_to_core, set_high_priority};
+pub use imp::{
+    boost_thread_priority, pin_thread_to_core, set_high_priority, HighResTimer, MmcssGuard,
+};

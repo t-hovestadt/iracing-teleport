@@ -5,9 +5,11 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crate::platform::{boost_thread_priority, pin_thread_to_core, set_high_priority, HighResTimer};
-use crate::protocol::{DELTA_BIT, Sender, xor_delta};
+use crate::protocol::{xor_delta, Sender, DELTA_BIT};
 use crate::stats::Stats;
-use crate::telemetry::{IRSDK_HEADER_SIZE, MAX_TELEMETRY_SIZE, Telemetry, TelemetryError, TelemetryProvider};
+use crate::telemetry::{
+    Telemetry, TelemetryError, TelemetryProvider, IRSDK_HEADER_SIZE, MAX_TELEMETRY_SIZE,
+};
 
 pub const DEFAULT_RECONNECT_TIMEOUT_SECS: u64 = 10;
 /// Default UDP datagram size for source — matches `protocol::MAX_DATAGRAM_SIZE`.
@@ -24,24 +26,25 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 // connect while still being negligible overhead during normal racing.
 const FULL_FRAME_INTERVAL: Duration = Duration::from_secs(10);
 
-
 /// Returns the byte offset where the variable data region begins —
 /// `min(varBuf[i].bufOffset)` for all active buffers. This is the end of the
 /// static prefix (irsdk header + var descriptors + session YAML).
 /// Falls back to `data.len()` if the header is missing or malformed.
 fn session_info_end(data: &[u8]) -> usize {
-    if data.len() < IRSDK_HEADER_SIZE { return data.len(); }
-    let num_buf = (i32::from_le_bytes(
-        data[32..36].try_into().unwrap_or([0; 4])
-    ) as usize).min(4);
-    if num_buf == 0 { return data.len(); }
+    if data.len() < IRSDK_HEADER_SIZE {
+        return data.len();
+    }
+    let num_buf = (i32::from_le_bytes(data[32..36].try_into().unwrap_or([0; 4])) as usize).min(4);
+    if num_buf == 0 {
+        return data.len();
+    }
     let mut min_off = data.len();
     for i in 0..num_buf {
         let b = 48 + i * 16;
-        if b + 8 > data.len() { return data.len(); }
-        let off = i32::from_le_bytes(
-            data[b + 4..b + 8].try_into().unwrap_or([0; 4])
-        ) as usize;
+        if b + 8 > data.len() {
+            return data.len();
+        }
+        let off = i32::from_le_bytes(data[b + 4..b + 8].try_into().unwrap_or([0; 4])) as usize;
         if off > IRSDK_HEADER_SIZE && off < data.len() {
             min_off = min_off.min(off);
         }
@@ -91,7 +94,8 @@ pub fn run(
     // latency. 2MB holds ~9 full frames with no backpressure.
     let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     sock.set_send_buffer_size(2 * 1024 * 1024)?;
-    let bind_addr: SocketAddr = bind.parse()
+    let bind_addr: SocketAddr = bind
+        .parse()
         .map_err(|e| std::io::Error::other(format!("invalid bind address: {e}")))?;
     sock.bind(&bind_addr.into())?;
     let socket: UdpSocket = sock.into();
@@ -105,11 +109,19 @@ pub fn run(
         socket.connect(target_addr)?;
     }
 
-    let send_one = |sender: &mut Sender, payload: &[u8], source_us: u64, buf_offset: u32| -> std::io::Result<u16> {
+    let send_one = |sender: &mut Sender,
+                    payload: &[u8],
+                    source_us: u64,
+                    buf_offset: u32|
+     -> std::io::Result<u16> {
         if unicast {
-            sender.send(payload, source_us, buf_offset, |d| socket.send(d).map(|_| ()))
+            sender.send(payload, source_us, buf_offset, |d| {
+                socket.send(d).map(|_| ())
+            })
         } else {
-            sender.send(payload, source_us, buf_offset, |d| socket.send_to(d, target_addr).map(|_| ()))
+            sender.send(payload, source_us, buf_offset, |d| {
+                socket.send_to(d, target_addr).map(|_| ())
+            })
         }
     };
     let send_heartbeat = |sender: &mut Sender| -> std::io::Result<()> {
@@ -317,8 +329,8 @@ pub fn run(
             let prefix_end = session_info_end(data);
             partial_staging[..prefix_end].copy_from_slice(&data[..prefix_end]);
             partial_staging[4..8].copy_from_slice(&[0u8; 4]); // zero status — target skips [4..8]
-            // Reset counters: next partial frame after this session-info is a keyframe,
-            // and last_tick is invalid because the new session's tickCount sequence restarts.
+                                                              // Reset counters: next partial frame after this session-info is a keyframe,
+                                                              // and last_tick is invalid because the new session's tickCount sequence restarts.
             tick_counter = 0;
             last_tick = -1;
             (&partial_staging[..prefix_end], false, buf_offset)
@@ -330,7 +342,10 @@ pub fn run(
             if full_len > partial_staging.len() {
                 eprintln!(
                     "partial frame too large ({} + {} = {} bytes, max {}), skipping",
-                    IRSDK_HEADER_SIZE, var_slice.len(), full_len, partial_staging.len()
+                    IRSDK_HEADER_SIZE,
+                    var_slice.len(),
+                    full_len,
+                    partial_staging.len()
                 );
                 continue;
             }
@@ -392,12 +407,24 @@ pub fn run(
         let source_us = last_data.elapsed().as_micros() as u64;
 
         let is_full = buf_offset == u32::MAX;
-        match send_one(&mut sender, &compress_buf[..compressed_len], source_us, wire_buf_offset) {
+        match send_one(
+            &mut sender,
+            &compress_buf[..compressed_len],
+            source_us,
+            wire_buf_offset,
+        ) {
             Ok(_) => {
                 // Reuse the pre-send timestamp for stats: send itself is sub-µs
                 // with the 2 MB socket buffer, so the difference from actual
                 // post-send time is negligible. Saves one QPC syscall per tick.
-                stats.record(compressed_len, payload.len(), source_us, 0, is_full, is_delta);
+                stats.record(
+                    compressed_len,
+                    payload.len(),
+                    source_us,
+                    0,
+                    is_full,
+                    is_delta,
+                );
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 // Send buffer full — silently count as dropped; shown in the 5-s stats
