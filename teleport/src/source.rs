@@ -10,6 +10,9 @@ use crate::stats::Stats;
 use crate::telemetry::{IRSDK_HEADER_SIZE, MAX_TELEMETRY_SIZE, Telemetry, TelemetryError, TelemetryProvider};
 
 pub const DEFAULT_RECONNECT_TIMEOUT_SECS: u64 = 10;
+/// Default UDP datagram size for source — matches `protocol::MAX_DATAGRAM_SIZE`.
+/// Expose so CLI binaries can use it as the default value for `--datagram-size`.
+pub use crate::protocol::MAX_DATAGRAM_SIZE as DEFAULT_DATAGRAM_SIZE;
 const POLL_INTERVAL_MS: u32 = 200;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 // Fallback interval for sending a session-info frame when the bidirectional
@@ -48,9 +51,11 @@ pub fn run(
     bind: &str,
     target: &str,
     unicast: bool,
+    busy_wait: bool,
     pin_core: Option<usize>,
     high_priority: bool,
     reconnect_timeout_secs: u64,
+    datagram_size: usize,
     shutdown: mpsc::Receiver<()>,
 ) -> std::io::Result<()> {
     let reconnect_timeout = Duration::from_secs(reconnect_timeout_secs);
@@ -61,6 +66,19 @@ pub fn run(
     }
     if let Some(core) = pin_core {
         pin_thread_to_core(core);
+    }
+    // In busy-wait mode the main loop spins on WaitForSingleObject(0) — no OS
+    // scheduler wake-up jitter, but burns one CPU core.  On the iRacing PC this
+    // competes with iRacing; only use if you have spare cores.
+    let poll_ms = if busy_wait { 0 } else { POLL_INTERVAL_MS };
+    if busy_wait {
+        println!("Busy-wait mode: source thread will burn one CPU core for lower latency.");
+    }
+    // Clamp to a sensible range: at least 64 bytes (header + minimal payload)
+    // and at most 65507 bytes (max UDP payload on IPv4).
+    let datagram_size = datagram_size.clamp(64, 65_507);
+    if datagram_size != crate::protocol::MAX_DATAGRAM_SIZE {
+        println!("Datagram size: {datagram_size} bytes per fragment.");
     }
 
     // Build the socket manually so we can set the send buffer before binding.
@@ -110,7 +128,7 @@ pub fn run(
         }
     };
 
-    let mut sender = Sender::new();
+    let mut sender = Sender::with_datagram_size(datagram_size);
     let mut stats = Stats::new("source");
     let mut last_data = Instant::now();
     let mut last_heartbeat = Instant::now();
@@ -137,7 +155,11 @@ pub fn run(
             return Ok(());
         }
 
-        if !telemetry.wait_for_data(POLL_INTERVAL_MS) {
+        if !telemetry.wait_for_data(poll_ms) {
+            // In busy-wait mode this branch fires on every spin iteration (poll_ms=0
+            // returns immediately when no new data). Housekeeping (resync recv,
+            // heartbeat) is self-throttled by the elapsed-time guards below, so it
+            // only runs at the normal rate regardless of how fast the loop spins.
             // Check for resync requests from targets even while iRacing is idle.
             let mut tmp = [0u8; 1];
             if socket.recv_from(&mut tmp).is_ok() {
@@ -173,6 +195,12 @@ pub fn run(
                 };
                 last_data = Instant::now();
                 stats = Stats::new("source");
+            }
+            if busy_wait {
+                // Emit a spin-loop hint (PAUSE instruction) — reduces power
+                // consumption and prevents the CPU from mis-predicting branch
+                // patterns in the spin loop, without introducing any sleep.
+                std::hint::spin_loop();
             }
             continue;
         }

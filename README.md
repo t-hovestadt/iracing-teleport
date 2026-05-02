@@ -59,7 +59,8 @@ See the [Direct Ethernet setup](#direct-ethernet-setup) section below.
 | `--target <ADDR>` | ✓ | | `239.255.0.1:5000` | Destination (multicast group:port or unicast IP:port) |
 | `--unicast` | ✓ | ✓ | off | Send/receive directly host-to-host instead of multicast |
 | `--group <ADDR>` | | ✓ | `239.255.0.1` | Multicast group to join |
-| `--busy-wait` | | ✓ | off | Spin on recv instead of sleeping; lower jitter, costs one CPU core |
+| `--busy-wait` | ✓ | ✓ | off | Spin instead of sleeping; eliminates OS scheduler wake-up jitter (~0–2 ms), costs one CPU core. On the iRacing PC only use if you have spare cores |
+| `--datagram-size <BYTES>` | ✓ | | `9000` | UDP payload bytes per fragment. Use `1472` on standard 1500-byte MTU networks (LAN, WiFi) to avoid IP fragmentation. Target auto-detects the sender's size |
 | `--pin-core <N>` | ✓ | ✓ | off | Pin the worker thread to CPU core N (0-based) |
 | `--fanalab` | | ✓ | off | Spawn a dummy iRacingSim64DX11.exe so FanaLab detects iRacing and auto-loads per-car profiles |
 | `--reconnect-timeout <SECS>` | ✓ | | `10` | Seconds without telemetry data before closing and reconnecting to iRacing; increase if your simulator takes longer than 10 s between sessions |
