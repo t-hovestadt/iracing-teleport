@@ -9,8 +9,9 @@ mod imp {
     use windows_sys::Win32::Foundation::HANDLE;
     use windows_sys::Win32::Media::{timeBeginPeriod, timeEndPeriod};
     use windows_sys::Win32::System::Threading::{
-        AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW, GetCurrentThread,
-        SetThreadAffinityMask, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
+        AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW, GetCurrentProcess,
+        GetCurrentThread, HIGH_PRIORITY_CLASS, SetPriorityClass, SetThreadAffinityMask,
+        SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
     };
 
     /// RAII guard that requests 1 ms Windows timer resolution for the lifetime
@@ -66,6 +67,19 @@ mod imp {
         }
     }
 
+    /// Raise the process to HIGH_PRIORITY_CLASS for lower OS scheduling jitter.
+    /// Stacks with MMCSS and ABOVE_NORMAL thread priority. Safe to use on the
+    /// SimHub PC. On the iRacing PC this competes with iRacing's own scheduling;
+    /// only use it if the machine is dedicated to streaming with no game running.
+    pub fn set_high_priority() {
+        let ok = unsafe { SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS) };
+        if ok == 0 {
+            eprintln!("set_high_priority: SetPriorityClass failed");
+        } else {
+            println!("Process priority set to HIGH_PRIORITY_CLASS.");
+        }
+    }
+
     /// Pin the calling thread to a single CPU core. Reduces jitter from
     /// cross-core migration at the cost of giving up scheduling flexibility.
     /// `core` is a 0-based CPU index; cores past 63 are ignored.
@@ -95,7 +109,8 @@ mod imp {
         pub fn acquire() -> Option<Self> { Some(Self) }
     }
     pub fn boost_thread_priority() {}
+    pub fn set_high_priority() {}
     pub fn pin_thread_to_core(_core: usize) {}
 }
 
-pub use imp::{HighResTimer, MmcssGuard, boost_thread_priority, pin_thread_to_core};
+pub use imp::{HighResTimer, MmcssGuard, boost_thread_priority, pin_thread_to_core, set_high_priority};

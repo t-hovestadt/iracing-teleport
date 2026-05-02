@@ -21,6 +21,12 @@ struct Args {
     /// Pin the worker thread to a specific CPU core (0-based).
     #[arg(long, value_name = "N")]
     pin_core: Option<usize>,
+
+    /// Raise the process to HIGH_PRIORITY_CLASS for lower scheduling jitter.
+    /// On the iRacing PC this competes with iRacing — only use if the machine
+    /// is dedicated to streaming with no game running.
+    #[arg(long)]
+    high_priority: bool,
 }
 
 fn main() {
@@ -36,7 +42,7 @@ fn main() {
     let mode = if args.unicast { "unicast" } else { "multicast" };
     println!("source → {} ({})", args.target, mode);
 
-    if let Err(e) = source::run(&args.bind, &args.target, args.unicast, args.pin_core, rx) {
+    if let Err(e) = source::run(&args.bind, &args.target, args.unicast, args.pin_core, args.high_priority, rx) {
         eprintln!("error: {e}");
         std::process::exit(1);
     }

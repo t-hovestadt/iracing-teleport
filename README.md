@@ -62,6 +62,8 @@ See the [Direct Ethernet setup](#direct-ethernet-setup) section below.
 | `--busy-wait` | | ✓ | off | Spin on recv instead of sleeping; lower jitter, costs one CPU core |
 | `--pin-core <N>` | ✓ | ✓ | off | Pin the worker thread to CPU core N (0-based) |
 | `--fanalab` | | ✓ | off | Spawn a dummy iRacingSim64DX11.exe so FanaLab detects iRacing and auto-loads per-car profiles |
+| `--stale-timeout <SECS>` | | ✓ | `10` | Seconds without data before closing the telemetry map; increase for long loading screens |
+| `--high-priority` | ✓ | ✓ | off | Raise the process to HIGH_PRIORITY_CLASS for lower scheduling jitter. Safe on the SimHub PC; on the iRacing PC only use if iRacing is not running on the same machine |
 
 ---
 

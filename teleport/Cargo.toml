@@ -22,7 +22,11 @@ path = "src/bin/target.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-lz4_flex = "0.11"
+# safe-encode disabled: encoder input is trusted local iRacing shared memory and the
+# output buffer is pre-sized via get_maximum_output_size — bounds checks are redundant.
+# checked-decode kept: validates compressed stream structure before decompressing
+# network-sourced data, catching malformed packets before unsafe indexing could occur.
+lz4_flex = { version = "0.11", default-features = false, features = ["std", "checked-decode"] }
 ctrlc = "3"
 socket2 = { version = "0.5", features = ["all"] }
 

@@ -4,7 +4,7 @@ use std::net::{SocketAddr, UdpSocket};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use crate::platform::{boost_thread_priority, pin_thread_to_core, HighResTimer};
+use crate::platform::{boost_thread_priority, pin_thread_to_core, set_high_priority, HighResTimer};
 use crate::protocol::Sender;
 use crate::stats::Stats;
 use crate::telemetry::{IRSDK_HEADER_SIZE, MAX_TELEMETRY_SIZE, Telemetry, TelemetryError, TelemetryProvider};
@@ -49,10 +49,14 @@ pub fn run(
     target: &str,
     unicast: bool,
     pin_core: Option<usize>,
+    high_priority: bool,
     shutdown: mpsc::Receiver<()>,
 ) -> std::io::Result<()> {
     let _timer = HighResTimer::acquire();
     boost_thread_priority();
+    if high_priority {
+        set_high_priority();
+    }
     if let Some(core) = pin_core {
         pin_thread_to_core(core);
     }
@@ -188,8 +192,11 @@ pub fn run(
         // (~5–15 KB). See the "SimHub activation invariant" block below for why
         // session-info frames must always send the complete map.
         let force_full = last_full_frame.elapsed() >= FULL_FRAME_INTERVAL || pending_resync;
+        // Single snapshot: both the offset/session-update calculation and the payload
+        // copy use the same slice, eliminating the window where iRacing could rotate
+        // the ring buffer between the two reads.
+        let data = telemetry.as_slice();
         let (buf_offset, payload_slice) = {
-            let data = telemetry.as_slice();
             let session_update = data
                 .get(12..16)
                 .and_then(|s| s.try_into().ok())
@@ -232,8 +239,6 @@ pub fn run(
             }
         };
 
-        let data = telemetry.as_slice();
-
         // Session-info frames send only the static prefix (header + var descriptors
         // + session YAML) with the status field zeroed. The target copies this to
         // the map skipping [4..8] so status stays 0 until the first partial frame
@@ -261,14 +266,22 @@ pub fn run(
                 continue;
             }
         };
+        // Measured pre-send: this is what goes in the wire header so the target can
+        // compute end-to-end latency (source compress time + network transit).
         let source_us = last_data.elapsed().as_micros() as u64;
 
         let is_full = buf_offset == u32::MAX;
         match send_one(&mut sender, &compress_buf[..compressed_len], source_us, buf_offset) {
-            Ok(_) => stats.record(compressed_len, source_us, 0, is_full),
+            Ok(_) => {
+                // Measured post-send for local stats: captures full source-side cost
+                // including the fragment loop and socket send calls.
+                let source_total_us = last_data.elapsed().as_micros() as u64;
+                stats.record(compressed_len, source_total_us, 0, is_full);
+            }
             Err(e) => eprintln!("send failed: {e}"),
         }
-        last_heartbeat = Instant::now();
+        // last_data was just set — no need for a fresh Instant::now() syscall here.
+        last_heartbeat = last_data;
 
         // Poll for resync requests from targets (non-blocking).
         let mut tmp = [0u8; 1];

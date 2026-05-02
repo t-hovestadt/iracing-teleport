@@ -32,6 +32,16 @@ struct Args {
     /// started when an iRacing session is detected and killed when it drops.
     #[arg(long)]
     fanalab: bool,
+
+    /// Seconds without data before closing the telemetry map. Increase for
+    /// long loading screens that exceed the default.
+    #[arg(long, default_value_t = target::DEFAULT_STALE_TIMEOUT_SECS)]
+    stale_timeout: u64,
+
+    /// Raise the process to HIGH_PRIORITY_CLASS for lower scheduling jitter.
+    /// Safe to use on the SimHub PC.
+    #[arg(long)]
+    high_priority: bool,
 }
 
 fn main() {
@@ -60,6 +70,8 @@ fn main() {
         args.busy_wait,
         args.pin_core,
         args.fanalab,
+        args.stale_timeout,
+        args.high_priority,
         rx,
     ) {
         eprintln!("error: {e}");
