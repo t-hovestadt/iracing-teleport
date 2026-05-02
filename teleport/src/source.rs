@@ -222,10 +222,14 @@ pub fn run(
                 got_data = false;
                 last_session_update = -1;
                 last_full_frame = Instant::now() - FULL_FRAME_INTERVAL;
-                // Reset delta state: target_supports_delta until we hear a new
-                // capability packet; tick_counter so the first partial frame after
-                // reconnect is a keyframe; last_tick so the first varBuf is always sent.
-                target_supports_delta = false;
+                // Reset per-session state. target_supports_delta is intentionally
+                // preserved: it reflects the target process's capabilities, not the
+                // iRacing session. Resetting it would disable delta for the rest of
+                // the run because the target only re-sends its capability packet when
+                // has_full_frame is false — which it isn't after a brief iRacing outage.
+                // The delta payload state (prev_varbuf / tick_counter) is reset by the
+                // session-info frame source sends immediately after reconnect, so there
+                // is no correctness risk in keeping target_supports_delta as-is.
                 tick_counter = 0;
                 last_tick = -1;
                 telemetry = loop {
