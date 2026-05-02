@@ -4,12 +4,12 @@ use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use crate::platform::{boost_thread_priority, pin_thread_to_core, HighResTimer, MmcssGuard};
+use crate::platform::{boost_thread_priority, pin_thread_to_core, set_high_priority, HighResTimer, MmcssGuard};
 use crate::protocol::{MAX_DATAGRAM_SIZE, Receiver as ProtoReceiver};
 use crate::stats::Stats;
 use crate::telemetry::{IRSDK_HEADER_SIZE, MAX_TELEMETRY_SIZE, Telemetry, TelemetryProvider};
 
-const STALE_TIMEOUT: Duration = Duration::from_secs(10);
+pub const DEFAULT_STALE_TIMEOUT_SECS: u64 = 10;
 // How often target retries a resync request to source when has_full_frame is false.
 const RESYNC_REQUEST_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -22,13 +22,23 @@ impl FanalabStub {
     fn spawn() -> Option<Self> {
         let own_path = std::env::current_exe().ok()?;
         let stub_path = std::env::temp_dir().join("iRacingSim64DX11.exe");
-        // Copy this executable to temp as iRacingSim64DX11.exe. If the file is
-        // locked (a leftover stub from a previous crash), try the existing copy.
-        if let Err(e) = std::fs::copy(&own_path, &stub_path) {
-            if !stub_path.exists() {
-                eprintln!("fanalab: could not create stub: {e}");
-                return None;
+        // Write to a temp name first, then rename — atomic on NTFS within a single
+        // volume. Avoids leaving a half-written exe if we crash mid-copy, which
+        // would prevent the stub from spawning on the next run.
+        let tmp_path = std::env::temp_dir().join("iRacingSim64DX11_new.exe");
+        if std::fs::copy(&own_path, &tmp_path).is_ok() {
+            if let Err(_) = std::fs::rename(&tmp_path, &stub_path) {
+                // Rename failed (destination locked by a prior crash). Clean up the
+                // temp file and fall back to whatever is already at stub_path.
+                let _ = std::fs::remove_file(&tmp_path);
+                if !stub_path.exists() {
+                    eprintln!("fanalab: could not create stub");
+                    return None;
+                }
             }
+        } else if !stub_path.exists() {
+            eprintln!("fanalab: could not create stub");
+            return None;
         }
         match std::process::Command::new(&stub_path).arg("--fanalab-stub").spawn() {
             Ok(child) => {
@@ -57,10 +67,16 @@ pub fn run(
     busy_wait: bool,
     pin_core: Option<usize>,
     fanalab: bool,
+    stale_timeout_secs: u64,
+    high_priority: bool,
     shutdown: mpsc::Receiver<()>,
 ) -> std::io::Result<()> {
+    let stale_timeout = Duration::from_secs(stale_timeout_secs);
     let _timer = HighResTimer::acquire();
     boost_thread_priority();
+    if high_priority {
+        set_high_priority();
+    }
     let _mmcss = MmcssGuard::acquire();
     if let Some(core) = pin_core {
         pin_thread_to_core(core);
@@ -108,6 +124,8 @@ pub fn run(
     // Guard: only write partial frames once we have received a session-info frame.
     let mut has_full_frame = false;
     // Source address learned from recv_from; used to send resync requests.
+    // Updated on every recv so resync requests always go to the current source port.
+    #[allow(unused_assignments)] // initial None is intentional; first recv_from overwrites it
     let mut source_addr: Option<std::net::SocketAddr> = None;
     let mut last_resync_request = Instant::now() - RESYNC_REQUEST_INTERVAL;
     // FanaLab compat: dummy process that makes FanaLab think iRacing is running.
@@ -122,7 +140,10 @@ pub fn run(
 
         match socket.recv_from(&mut recv_buf) {
             Ok((len, src)) => {
-                source_addr = source_addr.or(Some(src));
+                // Always update so resync requests go to the current source port.
+                // If source restarts on a different ephemeral port, keeping the old
+                // address would delay resync by up to stale_timeout seconds.
+                source_addr = Some(src);
                 let res = proto.ingest(&recv_buf[..len]);
 
                 if res.heartbeat {
@@ -254,8 +275,8 @@ pub fn run(
                     || e.kind() == std::io::ErrorKind::TimedOut =>
             {
                 // Drop the telemetry map when we haven't heard from the source for a while.
-                if telemetry.is_some() && last_update.elapsed() >= STALE_TIMEOUT {
-                    println!("No data for {}s, closing telemetry map.", STALE_TIMEOUT.as_secs());
+                if telemetry.is_some() && last_update.elapsed() >= stale_timeout {
+                    println!("No data for {}s, closing telemetry map.", stale_timeout.as_secs());
                     // Clear IRSDK_ST_CONNECTED before unmapping so SimHub sees
                     // a clean disconnect rather than a stale status flag.
                     if let Some(t) = telemetry.as_mut() {
@@ -263,7 +284,8 @@ pub fn run(
                     }
                     telemetry = None;
                     has_full_frame = false;
-                    source_addr = None;
+                    // source_addr is updated on every recv_from, so no need to clear it
+                    // here — the next incoming packet will set it correctly regardless.
                     fanalab_stub = None;
                 }
                 // In busy-wait mode the loop spins immediately; in blocking mode

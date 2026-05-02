@@ -30,6 +30,12 @@ enum Command {
         /// Pin the worker thread to a specific CPU core (0-based).
         #[arg(long, value_name = "N")]
         pin_core: Option<usize>,
+
+        /// Raise the process to HIGH_PRIORITY_CLASS for lower scheduling jitter.
+        /// On the iRacing PC this competes with iRacing — only use if the machine
+        /// is dedicated to streaming with no game running.
+        #[arg(long)]
+        high_priority: bool,
     },
 
     /// Receive telemetry and expose it as a local iRacing memory map.
@@ -59,6 +65,16 @@ enum Command {
         /// as running on this machine and auto-loads car profiles.
         #[arg(long)]
         fanalab: bool,
+
+        /// Seconds without data before closing the telemetry map. Increase for
+        /// long loading screens that exceed the default.
+        #[arg(long, default_value_t = teleport::target::DEFAULT_STALE_TIMEOUT_SECS)]
+        stale_timeout: u64,
+
+        /// Raise the process to HIGH_PRIORITY_CLASS for lower scheduling jitter.
+        /// Safe to use on the SimHub PC.
+        #[arg(long)]
+        high_priority: bool,
     },
 }
 
@@ -78,16 +94,16 @@ fn main() {
     .expect("failed to install Ctrl-C handler");
 
     let result = match cli.command {
-        Command::Source { bind, target, unicast, pin_core } => {
+        Command::Source { bind, target, unicast, pin_core, high_priority } => {
             let mode = if unicast { "unicast" } else { "multicast" };
             println!("source → {target} ({mode})");
-            source::run(&bind, &target, unicast, pin_core, rx)
+            source::run(&bind, &target, unicast, pin_core, high_priority, rx)
         }
-        Command::Target { bind, group, unicast, busy_wait, pin_core, fanalab } => {
+        Command::Target { bind, group, unicast, busy_wait, pin_core, fanalab, stale_timeout, high_priority } => {
             let dest = if unicast { "unicast" } else { group.as_str() };
             let mode = if unicast { "unicast" } else { "multicast" };
             println!("target ← {dest} ({mode})");
-            target::run(&bind, unicast, &group, busy_wait, pin_core, fanalab, rx)
+            target::run(&bind, unicast, &group, busy_wait, pin_core, fanalab, stale_timeout, high_priority, rx)
         }
     };
 
