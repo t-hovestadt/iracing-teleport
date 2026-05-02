@@ -145,8 +145,7 @@ impl Stats {
         // Show delta % when delta is active — helps users confirm delta encoding is live.
         if self.delta_updates > 0 {
             let partial_updates = self.updates.saturating_sub(full_count);
-            if partial_updates > 0 {
-                let pct = self.delta_updates * 100 / partial_updates;
+            if let Some(pct) = (self.delta_updates * 100).checked_div(partial_updates) {
                 line.push_str(&format!("  {pct}% delta"));
             }
         }

@@ -52,6 +52,7 @@ fn session_info_end(data: &[u8]) -> usize {
     min_off
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     bind: &str,
     target: &str,
@@ -377,7 +378,7 @@ pub fn run(
             let use_delta = !no_delta
                 && target_supports_delta
                 && keyframe_interval > 0
-                && tick_counter % keyframe_interval as u32 != 0;
+                && !tick_counter.is_multiple_of(keyframe_interval as u32);
 
             if use_delta {
                 xor_delta(

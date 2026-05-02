@@ -29,7 +29,7 @@ impl FanalabStub {
         // would prevent the stub from spawning on the next run.
         let tmp_path = std::env::temp_dir().join("iRacingSim64DX11_new.exe");
         if std::fs::copy(&own_path, &tmp_path).is_ok() {
-            if let Err(_) = std::fs::rename(&tmp_path, &stub_path) {
+            if std::fs::rename(&tmp_path, &stub_path).is_err() {
                 // Rename failed (destination locked by a prior crash). Clean up the
                 // temp file and fall back to whatever is already at stub_path.
                 let _ = std::fs::remove_file(&tmp_path);
@@ -68,6 +68,7 @@ impl Drop for FanalabStub {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     bind: &str,
     unicast: bool,
