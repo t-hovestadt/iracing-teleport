@@ -171,6 +171,7 @@ pub fn run(
 
                         let t = telemetry.as_mut().unwrap();
                         let mut wrote = false;
+                        let mut dec_len_out = 0usize;
 
                         if res.buf_offset == u32::MAX {
                             // Session-info frame: decompress prefix into staging, then copy to
@@ -185,6 +186,7 @@ pub fn run(
                                     continue;
                                 }
                             };
+                            dec_len_out = prefix_len;
                             if prefix_len < 8 {
                                 eprintln!("session-info frame too short ({prefix_len} bytes), discarding");
                                 continue;
@@ -215,6 +217,7 @@ pub fn run(
                                     continue;
                                 }
                             };
+                            dec_len_out = dec_len;
                             if dec_len < IRSDK_HEADER_SIZE {
                                 eprintln!("partial frame decompressed to {dec_len} bytes, expected >{IRSDK_HEADER_SIZE}");
                                 continue;
@@ -246,7 +249,7 @@ pub fn run(
                             if let Some(start) = seq_start.take() {
                                 let transit_us = start.elapsed().as_micros() as u64;
                                 let is_full = res.buf_offset == u32::MAX;
-                                stats.record(compressed.len(), proto.last_source_us, transit_us, is_full);
+                                stats.record(compressed.len(), dec_len_out, proto.last_source_us, transit_us, is_full);
                                 stats.record_dropped(proto.dropped_sequences);
                                 proto.dropped_sequences = 0;
                             }

@@ -62,6 +62,7 @@ See the [Direct Ethernet setup](#direct-ethernet-setup) section below.
 | `--busy-wait` | | ✓ | off | Spin on recv instead of sleeping; lower jitter, costs one CPU core |
 | `--pin-core <N>` | ✓ | ✓ | off | Pin the worker thread to CPU core N (0-based) |
 | `--fanalab` | | ✓ | off | Spawn a dummy iRacingSim64DX11.exe so FanaLab detects iRacing and auto-loads per-car profiles |
+| `--reconnect-timeout <SECS>` | ✓ | | `10` | Seconds without telemetry data before closing and reconnecting to iRacing; increase if your simulator takes longer than 10 s between sessions |
 | `--stale-timeout <SECS>` | | ✓ | `10` | Seconds without data before closing the telemetry map; increase for long loading screens |
 | `--high-priority` | ✓ | ✓ | off | Raise the process to HIGH_PRIORITY_CLASS for lower scheduling jitter. Safe on the SimHub PC; on the iRacing PC only use if iRacing is not running on the same machine |
 
@@ -167,6 +168,7 @@ In Device Manager → Network Adapters → right-click the direct-link adapter �
 | Setting | Value |
 |---------|-------|
 | Energy Efficient Ethernet | Disabled |
+| Interrupt Moderation / Interrupt Throttle Rate | Disabled |
 | Wake on Magic Packet | Disabled |
 | Wake on Pattern Match | Disabled |
 | Auto MDI/MDIX | Auto |

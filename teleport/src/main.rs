@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use teleport::{source, target, DEFAULT_MULTICAST, DEFAULT_PORT};
+use teleport::source::DEFAULT_RECONNECT_TIMEOUT_SECS;
 use std::sync::mpsc;
 
 /// Stream iRacing telemetry over the network so SimHub (or any iRacing-compatible
@@ -36,6 +37,11 @@ enum Command {
         /// is dedicated to streaming with no game running.
         #[arg(long)]
         high_priority: bool,
+
+        /// Seconds without telemetry data before closing and reconnecting to iRacing.
+        /// Increase if iRacing takes longer than 10 s between sessions on your machine.
+        #[arg(long, default_value_t = DEFAULT_RECONNECT_TIMEOUT_SECS)]
+        reconnect_timeout: u64,
     },
 
     /// Receive telemetry and expose it as a local iRacing memory map.
@@ -94,10 +100,10 @@ fn main() {
     .expect("failed to install Ctrl-C handler");
 
     let result = match cli.command {
-        Command::Source { bind, target, unicast, pin_core, high_priority } => {
+        Command::Source { bind, target, unicast, pin_core, high_priority, reconnect_timeout } => {
             let mode = if unicast { "unicast" } else { "multicast" };
             println!("source → {target} ({mode})");
-            source::run(&bind, &target, unicast, pin_core, high_priority, rx)
+            source::run(&bind, &target, unicast, pin_core, high_priority, reconnect_timeout, rx)
         }
         Command::Target { bind, group, unicast, busy_wait, pin_core, fanalab, stale_timeout, high_priority } => {
             let dest = if unicast { "unicast" } else { group.as_str() };
