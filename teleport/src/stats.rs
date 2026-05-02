@@ -63,7 +63,15 @@ impl Stats {
     ///   decompression on the target side; pass `0` on the source.
     /// `is_full` — true for full-map frames, false for partial varBuf frames.
     /// `is_delta` — true when this partial frame was XOR-delta encoded.
-    pub fn record(&mut self, compressed: usize, uncompressed: usize, source_us: u64, transit_us: u64, is_full: bool, is_delta: bool) {
+    pub fn record(
+        &mut self,
+        compressed: usize,
+        uncompressed: usize,
+        source_us: u64,
+        transit_us: u64,
+        is_full: bool,
+        is_delta: bool,
+    ) {
         let total_us = source_us + transit_us;
         self.updates += 1;
         self.bytes += compressed as u64;
@@ -115,7 +123,12 @@ impl Stats {
         let (pp50, pp99, pmax) = percentiles(&mut self.partial_latencies);
 
         let full_count = self.full_latencies.len() as u64;
-        let full_avg = self.full_latencies.iter().sum::<u64>().checked_div(full_count).unwrap_or(0);
+        let full_avg = self
+            .full_latencies
+            .iter()
+            .sum::<u64>()
+            .checked_div(full_count)
+            .unwrap_or(0);
 
         let (sp50, sp99, _) = percentiles(&mut self.source_latencies);
 

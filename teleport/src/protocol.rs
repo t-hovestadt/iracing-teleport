@@ -21,8 +21,16 @@ pub const DELTA_BIT: u32 = 1 << 31;
 /// XOR `current` against `previous` into `output` (all slices same length).
 /// Uses 8-byte chunks so LLVM auto-vectorises to SSE2/AVX2.
 pub fn xor_delta(current: &[u8], previous: &[u8], output: &mut [u8]) {
-    debug_assert_eq!(current.len(), previous.len(), "xor_delta: current/previous length mismatch");
-    debug_assert_eq!(current.len(), output.len(),   "xor_delta: current/output length mismatch");
+    debug_assert_eq!(
+        current.len(),
+        previous.len(),
+        "xor_delta: current/previous length mismatch"
+    );
+    debug_assert_eq!(
+        current.len(),
+        output.len(),
+        "xor_delta: current/output length mismatch"
+    );
     let len = current.len();
     let chunks = len / 8;
     let (cur_chunks, cur_tail) = current.split_at(chunks * 8);
@@ -106,14 +114,23 @@ impl Sender {
     /// receiver knows where to write the decompressed bytes (`u32::MAX` = full
     /// frame, any other value = partial varBuf frame).
     /// Returns the number of fragments sent.
-    pub fn send<F>(&mut self, data: &[u8], source_us: u64, buf_offset: u32, mut send_fn: F) -> io::Result<u16>
+    pub fn send<F>(
+        &mut self,
+        data: &[u8],
+        source_us: u64,
+        buf_offset: u32,
+        mut send_fn: F,
+    ) -> io::Result<u16>
     where
         F: FnMut(&[u8]) -> io::Result<()>,
     {
         let total = data.len();
         let n_fragments = total.div_ceil(self.payload_per_datagram);
         if n_fragments == 0 || n_fragments > u16::MAX as usize {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "payload too large or empty"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "payload too large or empty",
+            ));
         }
 
         for i in 0..n_fragments {
@@ -264,12 +281,18 @@ impl Receiver {
         // Ignore out-of-range or duplicate fragments.
         let idx = hdr.fragment as usize;
         if idx >= self.total_frags as usize || self.received[idx] {
-            return Ingested { new_seq: first_frag, ..Ingested::default() };
+            return Ingested {
+                new_seq: first_frag,
+                ..Ingested::default()
+            };
         }
 
         let data = &datagram[HEADER_SIZE..];
         if data.len() > MAX_PAYLOAD_PER_DATAGRAM {
-            return Ingested { new_seq: first_frag, ..Ingested::default() };
+            return Ingested {
+                new_seq: first_frag,
+                ..Ingested::default()
+            };
         }
 
         // Auto-detect the sender's fragment payload size from any non-final fragment.
@@ -288,7 +311,10 @@ impl Receiver {
         // buf.len() == max_payload always (pre-allocated in new()); payload_size ≤
         // max_payload is enforced in reset(), so valid fragments always fit.
         if dest_offset + data.len() > self.buf.len() {
-            return Ingested { new_seq: first_frag, ..Ingested::default() };
+            return Ingested {
+                new_seq: first_frag,
+                ..Ingested::default()
+            };
         }
         self.buf[dest_offset..dest_offset + data.len()].copy_from_slice(data);
         self.received[idx] = true;
@@ -304,7 +330,10 @@ impl Receiver {
                 buf_offset: self.last_buf_offset,
             }
         } else {
-            Ingested { new_seq: first_frag, ..Ingested::default() }
+            Ingested {
+                new_seq: first_frag,
+                ..Ingested::default()
+            }
         }
     }
 
@@ -349,7 +378,13 @@ mod tests {
 
     /// Build a raw datagram with arbitrary header fields, bypassing Sender
     /// validation. Used to test receiver behaviour on malformed input.
-    fn make_datagram(sequence: u32, fragments: u16, payload_size: u32, fragment_idx: u16, data: &[u8]) -> Vec<u8> {
+    fn make_datagram(
+        sequence: u32,
+        fragments: u16,
+        payload_size: u32,
+        fragment_idx: u16,
+        data: &[u8],
+    ) -> Vec<u8> {
         let hdr = Header {
             source_us: 0,
             sequence,
@@ -359,9 +394,8 @@ mod tests {
             fragments,
         };
         let mut buf = vec![0u8; HEADER_SIZE + data.len()];
-        let hdr_bytes = unsafe {
-            std::slice::from_raw_parts(&hdr as *const _ as *const u8, HEADER_SIZE)
-        };
+        let hdr_bytes =
+            unsafe { std::slice::from_raw_parts(&hdr as *const _ as *const u8, HEADER_SIZE) };
         buf[..HEADER_SIZE].copy_from_slice(hdr_bytes);
         buf[HEADER_SIZE..].copy_from_slice(data);
         buf
@@ -669,9 +703,19 @@ mod tests {
         let large: Vec<u8> = vec![0u8; MAX_PAYLOAD_PER_DATAGRAM * 3];
         let mut sender = Sender::new();
         let mut datagrams_a = Vec::new();
-        sender.send(&large, 0, u32::MAX, |d| { datagrams_a.push(d.to_vec()); Ok(()) }).unwrap();
+        sender
+            .send(&large, 0, u32::MAX, |d| {
+                datagrams_a.push(d.to_vec());
+                Ok(())
+            })
+            .unwrap();
         let mut datagrams_b = Vec::new();
-        sender.send(&large, 0, u32::MAX, |d| { datagrams_b.push(d.to_vec()); Ok(()) }).unwrap();
+        sender
+            .send(&large, 0, u32::MAX, |d| {
+                datagrams_b.push(d.to_vec());
+                Ok(())
+            })
+            .unwrap();
 
         let mut receiver = Receiver::new(large.len() + MAX_PAYLOAD_PER_DATAGRAM);
         // Deliver only the first fragment of sequence A, then all of sequence B.
@@ -683,6 +727,9 @@ mod tests {
             }
         }
         assert!(assembled, "sequence B should assemble");
-        assert_eq!(receiver.dropped_sequences, 1, "sequence A should be counted as dropped");
+        assert_eq!(
+            receiver.dropped_sequences, 1,
+            "sequence A should be counted as dropped"
+        );
     }
 }

@@ -1,7 +1,9 @@
 use clap::{Parser, Subcommand};
-use teleport::{source, target, DEFAULT_MULTICAST, DEFAULT_PORT};
-use teleport::source::{DEFAULT_RECONNECT_TIMEOUT_SECS, DEFAULT_DATAGRAM_SIZE, DEFAULT_KEYFRAME_INTERVAL};
 use std::sync::mpsc;
+use teleport::source::{
+    DEFAULT_DATAGRAM_SIZE, DEFAULT_KEYFRAME_INTERVAL, DEFAULT_RECONNECT_TIMEOUT_SECS,
+};
+use teleport::{source, target, DEFAULT_MULTICAST, DEFAULT_PORT};
 
 /// Stream iRacing telemetry over the network so SimHub (or any iRacing-compatible
 /// app) can run on a different machine than your iRacing installation.
@@ -110,7 +112,9 @@ enum Command {
 fn main() {
     // When spawned as a FanaLab compatibility stub, just park until killed.
     if std::env::args().any(|a| a == "--fanalab-stub") {
-        loop { std::thread::park(); }
+        loop {
+            std::thread::park();
+        }
     }
 
     let cli = Cli::parse();
@@ -123,16 +127,58 @@ fn main() {
     .expect("failed to install Ctrl-C handler");
 
     let result = match cli.command {
-        Command::Source { bind, target, unicast, busy_wait, pin_core, high_priority, reconnect_timeout, datagram_size, no_delta, keyframe_interval } => {
+        Command::Source {
+            bind,
+            target,
+            unicast,
+            busy_wait,
+            pin_core,
+            high_priority,
+            reconnect_timeout,
+            datagram_size,
+            no_delta,
+            keyframe_interval,
+        } => {
             let mode = if unicast { "unicast" } else { "multicast" };
             println!("source → {target} ({mode})");
-            source::run(&bind, &target, unicast, busy_wait, pin_core, high_priority, reconnect_timeout, datagram_size, no_delta, keyframe_interval, rx)
+            source::run(
+                &bind,
+                &target,
+                unicast,
+                busy_wait,
+                pin_core,
+                high_priority,
+                reconnect_timeout,
+                datagram_size,
+                no_delta,
+                keyframe_interval,
+                rx,
+            )
         }
-        Command::Target { bind, group, unicast, busy_wait, pin_core, fanalab, stale_timeout, high_priority } => {
+        Command::Target {
+            bind,
+            group,
+            unicast,
+            busy_wait,
+            pin_core,
+            fanalab,
+            stale_timeout,
+            high_priority,
+        } => {
             let dest = if unicast { "unicast" } else { group.as_str() };
             let mode = if unicast { "unicast" } else { "multicast" };
             println!("target ← {dest} ({mode})");
-            target::run(&bind, unicast, &group, busy_wait, pin_core, fanalab, stale_timeout, high_priority, rx)
+            target::run(
+                &bind,
+                unicast,
+                &group,
+                busy_wait,
+                pin_core,
+                fanalab,
+                stale_timeout,
+                high_priority,
+                rx,
+            )
         }
     };
 

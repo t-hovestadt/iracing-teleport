@@ -3,12 +3,12 @@ use std::ffi::c_void;
 use windows_sys::Win32::{
     Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0},
     Security::{
-        InitializeSecurityDescriptor, SetSecurityDescriptorDacl,
-        SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR,
+        InitializeSecurityDescriptor, SetSecurityDescriptorDacl, SECURITY_ATTRIBUTES,
+        SECURITY_DESCRIPTOR,
     },
     System::Memory::{
-        CreateFileMappingW, MapViewOfFile, MEMORY_MAPPED_VIEW_ADDRESS, OpenFileMappingW,
-        UnmapViewOfFile, FILE_MAP_ALL_ACCESS, FILE_MAP_READ, PAGE_READWRITE,
+        CreateFileMappingW, MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, FILE_MAP_ALL_ACCESS,
+        FILE_MAP_READ, MEMORY_MAPPED_VIEW_ADDRESS, PAGE_READWRITE,
     },
     System::Threading::{CreateEventW, OpenEventW, SetEvent, WaitForSingleObject},
 };
@@ -76,10 +76,15 @@ impl TelemetryProvider for WindowsTelemetry {
                 return Err(TelemetryError::Unavailable);
             }
 
-            let size = query_region_size(view.Value as *const u8)
-                .unwrap_or(super::MAX_TELEMETRY_SIZE);
+            let size =
+                query_region_size(view.Value as *const u8).unwrap_or(super::MAX_TELEMETRY_SIZE);
 
-            Ok(Self { h_map, h_event, view, size })
+            Ok(Self {
+                h_map,
+                h_event,
+                view,
+                size,
+            })
         }
     }
 
@@ -95,9 +100,9 @@ impl TelemetryProvider for WindowsTelemetry {
             );
             SetSecurityDescriptorDacl(
                 &mut sd as *mut _ as *mut c_void,
-                1,                        // bDaclPresent = TRUE
-                std::ptr::null_mut(),     // pDacl = NULL → grant all access
-                0,                        // bDaclDefaulted = FALSE
+                1,                    // bDaclPresent = TRUE
+                std::ptr::null_mut(), // pDacl = NULL → grant all access
+                0,                    // bDaclDefaulted = FALSE
             );
             let sa = SECURITY_ATTRIBUTES {
                 nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
@@ -130,7 +135,12 @@ impl TelemetryProvider for WindowsTelemetry {
                 return Err(TelemetryError::Other("CreateEventW failed".into()));
             }
 
-            Ok(Self { h_map, h_event, view, size })
+            Ok(Self {
+                h_map,
+                h_event,
+                view,
+                size,
+            })
         }
     }
 
@@ -229,6 +239,10 @@ fn query_region_size(ptr: *const u8) -> Option<usize> {
             &mut mbi,
             std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
         );
-        if ret == 0 { None } else { Some(mbi.RegionSize) }
+        if ret == 0 {
+            None
+        } else {
+            Some(mbi.RegionSize)
+        }
     }
 }
