@@ -10,6 +10,14 @@ description = "Stream Assetto Corsa / AC EVO telemetry to a remote SimHub PC"
 name = "ac-teleport"
 path = "src/main.rs"
 
+[[bin]]
+name = "source"
+path = "src/bin/source.rs"
+
+[[bin]]
+name = "target"
+path = "src/bin/target.rs"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 lz4_flex = { version = "0.11", default-features = false, features = ["std", "checked-decode"] }
