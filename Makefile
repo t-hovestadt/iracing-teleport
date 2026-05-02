@@ -1,5 +1,5 @@
 TARGET = x86_64-pc-windows-gnu
-RELEASE_DIR = teleport/target/$(TARGET)/release
+RELEASE_DIR = target/$(TARGET)/release
 
 # Default: cross-compile for Windows
 all: build
@@ -10,20 +10,20 @@ setup:
 	brew list mingw-w64 || brew install mingw-w64
 
 lint:
-	cd teleport && cargo fmt --all
-	cd teleport && cargo clippy --target=$(TARGET) --all-targets --all-features --fix --allow-dirty
+	cargo fmt --all
+	cargo clippy --target=$(TARGET) --all-targets --all-features --fix --allow-dirty
 
 # Cross compile using cargo
 build:
-	cd teleport && cargo build --target=$(TARGET) --release
+	cargo build --target=$(TARGET) --release
 
-# Run tests of cross-platform bits
+# Run unit tests (host platform; cross-compiled tests can't run on macOS)
 test:
-	cd teleport && cargo test --target=$(TARGET) --release
+	cargo test --lib
 
 # Remove compiled artifacts
 clean:
-	cd teleport && cargo clean
+	cargo clean
 
 # Show the output binary paths
 print:

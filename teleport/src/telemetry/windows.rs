@@ -30,8 +30,11 @@ pub struct WindowsTelemetry {
     size: usize,
 }
 
+// SAFETY: WindowsTelemetry wraps raw Win32 handles and a memory-mapped pointer.
+// The handles are not shared between threads; ownership transfer (Send) is safe.
+// Sync is NOT implemented: `as_slice_mut` from two threads simultaneously would
+// violate Rust's aliasing rules. All callers are single-threaded.
 unsafe impl Send for WindowsTelemetry {}
-unsafe impl Sync for WindowsTelemetry {}
 
 impl Drop for WindowsTelemetry {
     fn drop(&mut self) {
@@ -146,10 +149,19 @@ impl TelemetryProvider for WindowsTelemetry {
     }
 
     fn as_slice(&self) -> &[u8] {
+        // SAFETY: `view.Value` points to a memory-mapped region of `self.size`
+        // bytes opened via MapViewOfFile. The region outlives `self`. Multiple
+        // shared references are safe; iRacing writes concurrently but Rust's
+        // memory model permits concurrent reads — torn frames are detected and
+        // dropped by the TOCTOU tick-check in source.rs.
         unsafe { std::slice::from_raw_parts(self.view.Value as *const u8, self.size) }
     }
 
     fn as_slice_mut(&mut self) -> &mut [u8] {
+        // SAFETY: `view.Value` points to a memory-mapped region of `self.size`
+        // bytes created via CreateFileMappingW/MapViewOfFile (target side only).
+        // `&mut self` guarantees exclusive Rust-level access; iRacing never opens
+        // the target-side map we create, so no concurrent writes occur.
         unsafe { std::slice::from_raw_parts_mut(self.view.Value as *mut u8, self.size) }
     }
 
@@ -157,7 +169,7 @@ impl TelemetryProvider for WindowsTelemetry {
         self.size
     }
 
-    fn active_var_buf(&self) -> Option<(usize, usize)> {
+    fn active_var_buf(&self) -> Option<(usize, usize, i32, usize)> {
         let d = self.as_slice();
         if d.len() < super::IRSDK_HEADER_SIZE {
             return None;
@@ -178,6 +190,10 @@ impl TelemetryProvider for WindowsTelemetry {
         }
         let mut best_tick = i32::MIN;
         let mut best_off: usize = 0;
+        // Header byte offset of the winning slot's tickCount field. Used by the
+        // caller to detect TOCTOU tears: re-read after copying varBuf; if changed,
+        // iRacing advanced the slot mid-copy and the frame is torn.
+        let mut best_tick_off: usize = 48; // default to slot 0 (overwritten in loop)
         for i in 0..num_buf {
             let b = 48 + i * 16;
             let tick = i32::from_le_bytes(d[b..b + 4].try_into().ok()?);
@@ -185,12 +201,13 @@ impl TelemetryProvider for WindowsTelemetry {
             if tick > best_tick {
                 best_tick = tick;
                 best_off = off;
+                best_tick_off = b;
             }
         }
         if best_off + buf_len > d.len() {
             return None;
         }
-        Some((best_off, buf_len))
+        Some((best_off, buf_len, best_tick, best_tick_off))
     }
 
     fn clear_status(&mut self) {

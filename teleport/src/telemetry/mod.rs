@@ -54,10 +54,16 @@ pub trait TelemetryProvider: Sized {
     /// Size of the mapped region in bytes.
     fn size(&self) -> usize;
 
-    /// Returns `(byte_offset, byte_len)` of the active iRSdk variable buffer
-    /// within the map, or `None` if the header can't be parsed (caller falls
-    /// back to sending the full map).
-    fn active_var_buf(&self) -> Option<(usize, usize)> {
+    /// Returns `(buf_offset, buf_len, tick_before, tick_field_off)` of the active
+    /// iRSdk variable buffer within the map, or `None` if the header can't be
+    /// parsed (caller falls back to sending the full map).
+    ///
+    /// `tick_before` is the tickCount of the selected slot at the time of the
+    /// call. `tick_field_off` is the byte offset of that slot's tickCount field
+    /// within the header. The caller should re-read `data[tick_field_off..+4]`
+    /// after copying varBuf data; if it changed, iRacing overwrote the slot
+    /// mid-copy (torn frame) and the frame should be discarded.
+    fn active_var_buf(&self) -> Option<(usize, usize, i32, usize)> {
         None
     }
 

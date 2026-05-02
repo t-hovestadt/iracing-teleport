@@ -5,7 +5,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crate::platform::{boost_thread_priority, pin_thread_to_core, set_high_priority, HighResTimer, MmcssGuard};
-use crate::protocol::{MAX_DATAGRAM_SIZE, Receiver as ProtoReceiver};
+use crate::protocol::{DELTA_BIT, MAX_DATAGRAM_SIZE, Receiver as ProtoReceiver, xor_delta};
 use crate::stats::Stats;
 use crate::telemetry::{IRSDK_HEADER_SIZE, MAX_TELEMETRY_SIZE, Telemetry, TelemetryProvider};
 
@@ -117,6 +117,11 @@ pub fn run(
     // irsdk_header (112 bytes) || varBuf data, written to two disjoint
     // positions in the map, so it cannot be decompressed in-place.
     let mut partial_staging = vec![0u8; MAX_TELEMETRY_SIZE];
+    // XOR-delta state: prev_varbuf holds the last partial frame written
+    // (irsdk_header prepended); reconstruct_buf is the XOR workspace.
+    // Zeroed on session-info frames and stale timeout to stay in sync with source.
+    let mut prev_varbuf = vec![0u8; MAX_TELEMETRY_SIZE];
+    let mut reconstruct_buf = vec![0u8; MAX_TELEMETRY_SIZE];
     let mut telemetry: Option<Telemetry> = None;
     let mut last_update = Instant::now();
     let mut stats = Stats::new("target");
@@ -173,12 +178,17 @@ pub fn run(
                         let mut wrote = false;
                         let mut dec_len_out = 0usize;
 
+                        let is_delta = res.buf_offset != u32::MAX && (res.buf_offset & DELTA_BIT != 0);
+
                         if res.buf_offset == u32::MAX {
                             // Session-info frame: decompress prefix into staging, then copy to
                             // map SKIPPING bytes [4..8] (the status field). Preserving status
                             // at 0 (fresh map) or 1 (ongoing session) means SimHub can never
                             // see status=1 from a session-info frame before varBuf is populated.
                             // status=1 is written by the partial frame handler below, after varBuf.
+                            // lz4_flex with the `checked-decode` feature returns
+                            // Err (never panics or writes past the buffer end) if
+                            // the output would exceed partial_staging.len().
                             let prefix_len = match decompress_into(compressed, &mut partial_staging) {
                                 Ok(n) => n,
                                 Err(e) => {
@@ -197,6 +207,8 @@ pub fn run(
                             // [4..8] intentionally skipped — preserve existing status value
                             if n > 8 { map[8..n].copy_from_slice(&partial_staging[8..n]); }
                             has_full_frame = true;
+                            // Reset delta state: source will send a keyframe next.
+                            prev_varbuf.fill(0);
                             wrote = true;
                             // Spawn FanaLab compat stub on the first session-info frame so
                             // FanaLab sees iRacingSim64DX11.exe and loads car profiles.
@@ -209,11 +221,15 @@ pub fn run(
                             // The header contains status=1 from iRacing's live data; writing it
                             // after varBuf means status=1 becomes visible only once varBuf is
                             // already in place — see source.rs "SimHub activation invariant".
-                            let off = res.buf_offset as usize;
+                            let real_off = (res.buf_offset & !DELTA_BIT) as usize;
+                            // lz4_flex with the `checked-decode` feature returns
+                            // Err (never panics or writes past the buffer end) if
+                            // the output would exceed partial_staging.len().
                             let dec_len = match decompress_into(compressed, &mut partial_staging) {
                                 Ok(n) => n,
                                 Err(e) => {
-                                    eprintln!("decompression failed (partial frame): {e}");
+                                    eprintln!("decompression failed ({} frame): {e}",
+                                        if is_delta { "delta" } else { "partial" });
                                     continue;
                                 }
                             };
@@ -222,16 +238,38 @@ pub fn run(
                                 eprintln!("partial frame decompressed to {dec_len} bytes, expected >{IRSDK_HEADER_SIZE}");
                                 continue;
                             }
+
+                            // For delta frames: reconstruct current = delta XOR prev_varbuf.
+                            let frame_data: &[u8] = if is_delta {
+                                if dec_len > prev_varbuf.len() {
+                                    eprintln!("delta frame too large ({dec_len} bytes), discarding");
+                                    continue;
+                                }
+                                xor_delta(
+                                    &partial_staging[..dec_len],
+                                    &prev_varbuf[..dec_len],
+                                    &mut reconstruct_buf[..dec_len],
+                                );
+                                &reconstruct_buf[..dec_len]
+                            } else {
+                                &partial_staging[..dec_len]
+                            };
+
                             let var_len = dec_len - IRSDK_HEADER_SIZE;
                             let map = t.as_slice_mut();
-                            if map.len() < IRSDK_HEADER_SIZE || off + var_len > map.len() {
-                                eprintln!("partial frame out of range (off={off} var_len={var_len}), discarding");
+                            if map.len() < IRSDK_HEADER_SIZE || real_off + var_len > map.len() {
+                                eprintln!("partial frame out of range (off={real_off} var_len={var_len}), discarding");
                                 continue;
                             }
+                            // Update prev_varbuf only after bounds check passes, so it stays
+                            // aligned with what we actually wrote to the map. If we updated it
+                            // before the check and then discarded the frame, prev_varbuf and the
+                            // map would diverge — correct bytes but wrong frame in the map.
+                            prev_varbuf[..dec_len].copy_from_slice(frame_data);
                             // varBuf written first — status still 0 (fresh) or 1 (ongoing).
-                            map[off..off + var_len].copy_from_slice(&partial_staging[IRSDK_HEADER_SIZE..dec_len]);
+                            map[real_off..real_off + var_len].copy_from_slice(&frame_data[IRSDK_HEADER_SIZE..dec_len]);
                             // Header written last — sets status=1 only after varBuf is in place.
-                            map[..IRSDK_HEADER_SIZE].copy_from_slice(&partial_staging[..IRSDK_HEADER_SIZE]);
+                            map[..IRSDK_HEADER_SIZE].copy_from_slice(&frame_data[..IRSDK_HEADER_SIZE]);
                             wrote = true;
                         }
                         // else: partial before session-info — fall through to resync request below.
@@ -249,7 +287,7 @@ pub fn run(
                             if let Some(start) = seq_start.take() {
                                 let transit_us = start.elapsed().as_micros() as u64;
                                 let is_full = res.buf_offset == u32::MAX;
-                                stats.record(compressed.len(), dec_len_out, proto.last_source_us, transit_us, is_full);
+                                stats.record(compressed.len(), dec_len_out, proto.last_source_us, transit_us, is_full, is_delta);
                                 stats.record_dropped(proto.dropped_sequences);
                                 proto.dropped_sequences = 0;
                             }
@@ -266,7 +304,10 @@ pub fn run(
                 if !has_full_frame {
                     if let Some(addr) = source_addr {
                         if last_resync_request.elapsed() >= RESYNC_REQUEST_INTERVAL {
-                            let _ = socket.send_to(&[0u8; 1], addr);
+                            // Byte 0: resync request (0x01).
+                            // Byte 1: capability bitfield — bit 0 = delta-capable.
+                            // Old sources ignore the second byte and send a session-info frame.
+                            let _ = socket.send_to(&[0x01, 0x01], addr);
                             last_resync_request = Instant::now();
                         }
                     }
@@ -287,6 +328,9 @@ pub fn run(
                     }
                     telemetry = None;
                     has_full_frame = false;
+                    // Reset delta state: source will have reset its own state; zero
+                    // our prev_varbuf so we accept the next keyframe cleanly.
+                    prev_varbuf.fill(0);
                     // source_addr is updated on every recv_from, so no need to clear it
                     // here — the next incoming packet will set it correctly regardless.
                     fanalab_stub = None;
