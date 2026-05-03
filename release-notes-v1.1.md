@@ -47,9 +47,10 @@ The `src:` fields show the source-side processing time as measured on the target
 
 ### Bug fixes
 
+- **Delta encoding now persists across iRacing reconnects.** Previously, source reset the negotiated delta capability flag on every iRacing disconnect. Because the target only re-sends its capability packet when it lacks a full frame, delta was silently disabled for the rest of the session after any reconnect — confirmed in session logs showing 0% delta and 2–3× higher bandwidth after each "iRacing stopped responding" event. Source now retains the negotiated delta state for the lifetime of both processes.
 - Fixed "1-byte resync" documentation inconsistency — resync packets are 2 bytes.
 - `--busy-wait` help text now explicitly notes it is safe to use on the SimHub PC; the iRacing PC caveat applies to source only.
 
 ---
 
-**Full changelog:** see commit history from `582f5bd` to `520755d`.
+**Full changelog:** see commit history from `582f5bd` to `94fe129`.
