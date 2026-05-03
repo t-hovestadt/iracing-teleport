@@ -12,6 +12,11 @@ Stream iRacing telemetry over your local network so SimHub (or any iRacing-compa
 └─────────────────────────┘                                           └─────────────────────────┘
 ```
 
+**Companion projects:**
+- [ac-teleport](https://github.com/t-hovestadt/ac-teleport) — Assetto Corsa / ACE (shared memory)
+- [sim-relay](https://github.com/t-hovestadt/sim-relay) — games that broadcast UDP natively
+- [sim-bridge](https://github.com/t-hovestadt/sim-bridge) — unified single-binary launcher for all three
+
 ---
 
 ## Download
