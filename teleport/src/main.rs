@@ -178,6 +178,8 @@ fn main() {
                 stale_timeout,
                 high_priority,
                 rx,
+                None,
+                None,
             )
         }
     };

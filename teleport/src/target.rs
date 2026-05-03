@@ -1,7 +1,7 @@
 use lz4_flex::block::{decompress_into, get_maximum_output_size};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use crate::platform::{
@@ -79,6 +79,8 @@ pub fn run(
     stale_timeout_secs: u64,
     high_priority: bool,
     shutdown: mpsc::Receiver<()>,
+    on_first_data: Option<Arc<dyn Fn() + Send + Sync>>,
+    on_stale: Option<Arc<dyn Fn() + Send + Sync>>,
 ) -> std::io::Result<()> {
     let stale_timeout = Duration::from_secs(stale_timeout_secs);
     let _timer = HighResTimer::acquire();
@@ -138,6 +140,7 @@ pub fn run(
     let mut seq_start: Option<Instant> = None;
     // Guard: only write partial frames once we have received a session-info frame.
     let mut has_full_frame = false;
+    let mut first_data_called = false;
     // Source address learned from recv_from; used to send resync requests.
     // Updated on every recv so resync requests always go to the current source port.
     #[allow(unused_assignments)] // initial None is intentional; first recv_from overwrites it
@@ -225,6 +228,12 @@ pub fn run(
                                 map[8..n].copy_from_slice(&partial_staging[8..n]);
                             }
                             has_full_frame = true;
+                            if !first_data_called {
+                                if let Some(cb) = &on_first_data {
+                                    cb();
+                                }
+                                first_data_called = true;
+                            }
                             // Reset delta state: source will send a keyframe next.
                             prev_varbuf.fill(0);
                             wrote = true;
@@ -362,6 +371,10 @@ pub fn run(
                     }
                     telemetry = None;
                     has_full_frame = false;
+                    first_data_called = false;
+                    if let Some(cb) = &on_stale {
+                        cb();
+                    }
                     // Reset delta state: source will have reset its own state; zero
                     // our prev_varbuf so we accept the next keyframe cleanly.
                     prev_varbuf.fill(0);

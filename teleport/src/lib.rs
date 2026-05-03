@@ -11,7 +11,7 @@ pub const DEFAULT_MULTICAST: &str = "239.255.0.1";
 pub const DEFAULT_PORT: u16 = 5000;
 
 use std::io;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 
 pub struct SourceConfig {
     pub bind: String,
@@ -52,6 +52,10 @@ pub struct TargetConfig {
     pub fanalab: bool,
     pub stale_timeout_secs: u64,
     pub high_priority: bool,
+    /// Called once when the first complete frame is received. None = no-op.
+    pub on_first_data: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Called when the stale timeout fires and the telemetry map is dropped. None = no-op.
+    pub on_stale: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Default for TargetConfig {
@@ -65,6 +69,8 @@ impl Default for TargetConfig {
             fanalab: false,
             stale_timeout_secs: target::DEFAULT_STALE_TIMEOUT_SECS,
             high_priority: false,
+            on_first_data: None,
+            on_stale: None,
         }
     }
 }
@@ -96,5 +102,7 @@ pub fn run_target(config: TargetConfig, shutdown: mpsc::Receiver<()>) -> io::Res
         config.stale_timeout_secs,
         config.high_priority,
         shutdown,
+        config.on_first_data,
+        config.on_stale,
     )
 }

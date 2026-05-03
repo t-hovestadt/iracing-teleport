@@ -79,6 +79,8 @@ fn main() {
         args.stale_timeout,
         args.high_priority,
         rx,
+        None,
+        None,
     ) {
         eprintln!("error: {e}");
         std::process::exit(1);
