@@ -70,6 +70,11 @@ pub trait TelemetryProvider: Sized {
     /// Zero the IRSDK_ST_CONNECTED status flag at offset 4 so that consumers
     /// (e.g. SimHub) observe a clean disconnect when we close the map.
     fn clear_status(&mut self) {}
+
+    /// Zero the entire shared memory region via a temporary write handle so
+    /// FanaLab reads RPM=0 and sends LED-off to the wheel base on game exit.
+    /// No-op by default; implemented on Windows source side only.
+    fn zero_on_exit(&self) {}
 }
 
 // ── Platform dispatch ─────────────────────────────────────────────────────────

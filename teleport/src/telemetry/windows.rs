@@ -8,7 +8,7 @@ use windows_sys::Win32::{
     },
     System::Memory::{
         CreateFileMappingW, MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, FILE_MAP_ALL_ACCESS,
-        FILE_MAP_READ, MEMORY_MAPPED_VIEW_ADDRESS, PAGE_READWRITE,
+        FILE_MAP_READ, FILE_MAP_WRITE, MEMORY_MAPPED_VIEW_ADDRESS, PAGE_READWRITE,
     },
     System::Threading::{CreateEventW, OpenEventW, SetEvent, WaitForSingleObject},
 };
@@ -226,6 +226,29 @@ impl TelemetryProvider for WindowsTelemetry {
         let d = self.as_slice_mut();
         if d.len() >= 8 {
             d[4..8].copy_from_slice(&0u32.to_le_bytes());
+        }
+    }
+
+    fn zero_on_exit(&self) {
+        // FanaLab workaround: zero shared memory on game exit so FanaLab
+        // reads RPM=0 and sends LED-off command to the wheel base firmware.
+        // Without this, FanaLab reads stale RPM data and LEDs stay lit
+        // indefinitely until the base is power cycled or a new session starts.
+        // See: https://forum.fanatec.com/topic/19449
+        unsafe {
+            let h_write = OpenFileMappingW(FILE_MAP_WRITE, 0, wide(MEM_NAME).as_ptr());
+            if h_write == 0 || h_write == INVALID_HANDLE_VALUE {
+                return;
+            }
+            let view = MapViewOfFile(h_write, FILE_MAP_WRITE, 0, 0, 0);
+            if view.Value.is_null() {
+                CloseHandle(h_write);
+                return;
+            }
+            std::ptr::write_bytes(view.Value as *mut u8, 0, self.size);
+            UnmapViewOfFile(view);
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            CloseHandle(h_write);
         }
     }
 }
