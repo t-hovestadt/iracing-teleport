@@ -29,7 +29,7 @@ pub struct SourceConfig {
 impl Default for SourceConfig {
     fn default() -> Self {
         Self {
-            bind: "0.0.0.0".into(),
+            bind: "0.0.0.0:0".into(),
             target: String::new(),
             unicast: false,
             busy_wait: false,
@@ -57,7 +57,7 @@ pub struct TargetConfig {
 impl Default for TargetConfig {
     fn default() -> Self {
         Self {
-            bind: "0.0.0.0".into(),
+            bind: format!("0.0.0.0:{}", DEFAULT_PORT),
             unicast: false,
             multicast_group: DEFAULT_MULTICAST.into(),
             busy_wait: false,
