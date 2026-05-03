@@ -45,7 +45,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: iracing-teleport
-          path: target/x86_64-pc-windows-gnu/release/iracing-teleport.exe
+          path: |
+            target/x86_64-pc-windows-gnu/release/source.exe
+            target/x86_64-pc-windows-gnu/release/target.exe
+            target/x86_64-pc-windows-gnu/release/teleport.exe
           retention-days: 7
 
   release:
@@ -71,7 +74,7 @@ jobs:
       - name: Create release asset
         run: |
           cd target/x86_64-pc-windows-gnu/release
-          zip iracing-teleport.zip iracing-teleport.exe
+          zip iracing-teleport.zip source.exe target.exe teleport.exe
       
       - name: Upload release asset
         uses: softprops/action-gh-release@v2
