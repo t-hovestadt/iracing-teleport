@@ -224,14 +224,15 @@ pub fn run(
             if last_data.elapsed() >= reconnect_timeout {
                 if got_data {
                     println!("iRacing stopped responding — waiting to reconnect...");
+                    // FanaLab workaround: zero shared memory so FanaLab reads RPM=0
+                    // and sends LED-off to the wheel base.
+                    // Only when got_data is true: if we never received session data,
+                    // iRacing is still loading (not exiting) and no RPM was ever sent
+                    // to FanaLab, so zeroing is unnecessary and fires spuriously.
+                    // See: https://forum.fanatec.com/topic/19449
+                    eprintln!("[iRacing Teleport] Zeroing shared memory (FanaLab cleanup)");
+                    telemetry.zero_on_exit();
                 }
-                // FanaLab workaround: zero shared memory on game exit so FanaLab
-                // reads RPM=0 and sends LED-off command to the wheel base firmware.
-                // Without this, FanaLab reads stale RPM data and LEDs stay lit
-                // indefinitely until the base is power cycled or a new session starts.
-                // See: https://forum.fanatec.com/topic/19449
-                eprintln!("[iRacing Teleport] Zeroing shared memory (FanaLab cleanup)");
-                telemetry.zero_on_exit();
                 drop(telemetry);
                 got_data = false;
                 last_session_update = -1;
