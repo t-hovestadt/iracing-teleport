@@ -175,6 +175,8 @@ impl Sender {
             buf_offset: 0,
             source_us: 0,
         };
+        // Safety: `hdr` is a local stack variable (properly aligned). Viewing it as
+        // bytes is always valid; we read every byte before `hdr` is dropped.
         let hdr_bytes =
             unsafe { std::slice::from_raw_parts(&hdr as *const _ as *const u8, HEADER_SIZE) };
         self.buf[..HEADER_SIZE].copy_from_slice(hdr_bytes);
@@ -394,6 +396,8 @@ mod tests {
             fragments,
         };
         let mut buf = vec![0u8; HEADER_SIZE + data.len()];
+        // Safety: `hdr` is a local stack variable (properly aligned). Viewing it as
+        // bytes is always valid; we read every byte before `hdr` is dropped.
         let hdr_bytes =
             unsafe { std::slice::from_raw_parts(&hdr as *const _ as *const u8, HEADER_SIZE) };
         buf[..HEADER_SIZE].copy_from_slice(hdr_bytes);

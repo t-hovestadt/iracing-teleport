@@ -184,7 +184,9 @@ pub fn run(
                             }
                         }
 
-                        let t = telemetry.as_mut().unwrap();
+                        let Some(t) = telemetry.as_mut() else {
+                            continue;
+                        };
                         let mut wrote = false;
                         let mut dec_len_out = 0usize;
 
