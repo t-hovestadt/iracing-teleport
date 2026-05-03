@@ -185,6 +185,13 @@ pub fn run(
 
     loop {
         if shutdown.try_recv().is_ok() {
+            // FanaLab workaround: zero shared memory on game exit so FanaLab
+            // reads RPM=0 and sends LED-off command to the wheel base firmware.
+            // Without this, FanaLab reads stale RPM data and LEDs stay lit
+            // indefinitely until the base is power cycled or a new session starts.
+            // See: https://forum.fanatec.com/topic/19449
+            eprintln!("[iRacing Teleport] Zeroing shared memory (FanaLab cleanup)");
+            telemetry.zero_on_exit();
             stats.print_summary();
             return Ok(());
         }
@@ -218,6 +225,13 @@ pub fn run(
                 if got_data {
                     println!("iRacing stopped responding — waiting to reconnect...");
                 }
+                // FanaLab workaround: zero shared memory on game exit so FanaLab
+                // reads RPM=0 and sends LED-off command to the wheel base firmware.
+                // Without this, FanaLab reads stale RPM data and LEDs stay lit
+                // indefinitely until the base is power cycled or a new session starts.
+                // See: https://forum.fanatec.com/topic/19449
+                eprintln!("[iRacing Teleport] Zeroing shared memory (FanaLab cleanup)");
+                telemetry.zero_on_exit();
                 drop(telemetry);
                 got_data = false;
                 last_session_update = -1;

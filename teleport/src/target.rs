@@ -364,10 +364,10 @@ pub fn run(
                         "No data for {}s, closing telemetry map.",
                         stale_timeout.as_secs()
                     );
-                    // Clear IRSDK_ST_CONNECTED before unmapping so SimHub sees
-                    // a clean disconnect rather than a stale status flag.
+                    // Zero the entire map so SimHub sees a clean disconnect and
+                    // FanaLab reads RPM=0 to reset wheel base LEDs.
                     if let Some(t) = telemetry.as_mut() {
-                        t.clear_status();
+                        t.as_slice_mut().fill(0);
                     }
                     telemetry = None;
                     has_full_frame = false;
