@@ -14,14 +14,14 @@ executables, no installers, no dependencies.
 └─────────────────────────┘                                           └─────────────────────────┘
 ```
 
-**For all games in one app:** [sim-bridge](https://github.com/t-hovestadt/sim-bridge)
+**For all games in one app:** [sim-teleport](https://github.com/t-hovestadt/sim-teleport)
 bundles iRacing Teleport with AC Teleport and Sim Relay. One binary,
 automatic game detection, no manual switching.
 
 **Companion projects:**
 - [ac-teleport](https://github.com/t-hovestadt/ac-teleport) — Assetto Corsa / ACE (shared memory)
 - [sim-relay](https://github.com/t-hovestadt/sim-relay) — games that broadcast UDP natively
-- [sim-bridge](https://github.com/t-hovestadt/sim-bridge) — unified single-binary launcher for all three
+- [sim-teleport](https://github.com/t-hovestadt/sim-teleport) — unified single-binary launcher for all three
 
 ---
 
@@ -128,7 +128,7 @@ from staying lit after iRacing exits. It fires only on shutdown signal, not on
 session transitions.
 
 **FanaLab handle note**: FanaLab holds `Local\IRSDKDataValidEvent` open after
-iRacing exits. Early versions of sim-bridge probed this event to detect iRacing;
+iRacing exits. Early versions of sim-teleport probed this event to detect iRacing;
 FanaLab's persistent handle made iRacing appear alive long after it quit. Detection
 was reverted to process-name scanning (`iRacingSim64DX11.exe`) which is immune to
 this. The event is still used by source to wait for data — it's just not used for
@@ -325,7 +325,7 @@ straight-through cable won't link without a crossover cable.
 ## Library API
 
 iRacing Teleport is a library crate (`teleport = { path = "…/teleport" }`).
-Public API surface used by sim-bridge:
+Public API surface used by sim-teleport:
 
 ```rust
 pub struct SourceConfig {
@@ -368,7 +368,7 @@ pub const DEFAULT_MULTICAST: &str = "239.255.0.1";
 
 `on_first_data` fires when the first complete session-info frame is received.
 `on_stale` fires when the stale timeout expires and the map is closed.
-sim-bridge uses these to call `SimHubWPF.exe -switchgame` and kill stubs.
+sim-teleport uses these to call `SimHubWPF.exe -switchgame` and kill stubs.
 
 ---
 
