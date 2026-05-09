@@ -227,7 +227,7 @@ pub fn run(
                     // Do NOT zero here: the reconnect timeout fires during loading
                     // screens and session transitions while iRacing is still running.
                     // The FanaLab cleanup zero fires only on the shutdown signal
-                    // (above), which sim-bridge sends after confirming the process is gone.
+                    // (above), which sim-teleport sends after confirming the process is gone.
                 }
                 drop(telemetry);
                 got_data = false;
