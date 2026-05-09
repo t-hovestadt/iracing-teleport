@@ -19,9 +19,9 @@ bundles iRacing Teleport with AC Teleport and Sim Relay. One binary,
 automatic game detection, no manual switching.
 
 **Companion projects:**
-- [ac-teleport](https://github.com/t-hovestadt/ac-teleport) — Assetto Corsa / ACE (shared memory)
-- [sim-relay](https://github.com/t-hovestadt/sim-relay) — games that broadcast UDP natively
-- [sim-teleport](https://github.com/t-hovestadt/sim-teleport) — unified single-binary launcher for all three
+- [ac-teleport](https://github.com/t-hovestadt/ac-teleport) — Assetto Corsa / ACE (shared memory) — archived; absorbed into sim-teleport as a workspace crate
+- [sim-relay](https://github.com/t-hovestadt/sim-relay) — games that broadcast UDP natively — archived; absorbed into sim-teleport as a workspace crate
+- [sim-teleport](https://github.com/t-hovestadt/sim-teleport) — unified binary containing iRacing Teleport, AC Teleport, and Sim Relay; automatic game detection, no manual switching
 
 ---
 
@@ -339,10 +339,6 @@ pub struct SourceConfig {
     pub datagram_size: usize,          // 9000
     pub no_delta: bool,
     pub keyframe_interval: u16,        // 60
-    pub fanalab: bool,
-    pub stale_timeout_secs: u64,       // 10
-    pub on_first_data: Option<Arc<dyn Fn() + Send + Sync>>,
-    pub on_stale: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 pub fn run_source(config: SourceConfig, shutdown: Receiver<()>) -> io::Result<()>;
