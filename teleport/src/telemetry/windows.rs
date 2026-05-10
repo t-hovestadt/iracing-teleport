@@ -236,19 +236,35 @@ impl TelemetryProvider for WindowsTelemetry {
         // indefinitely until the base is power cycled or a new session starts.
         // See: https://forum.fanatec.com/topic/19449
         unsafe {
-            let h_write = OpenFileMappingW(FILE_MAP_WRITE, 0, wide(MEM_NAME).as_ptr());
-            if h_write == 0 || h_write == INVALID_HANDLE_VALUE {
-                return;
-            }
-            let view = MapViewOfFile(h_write, FILE_MAP_WRITE, 0, 0, 0);
-            if view.Value.is_null() {
+            'retry: for attempt in 1u8..=3 {
+                let h_write = OpenFileMappingW(FILE_MAP_WRITE, 0, wide(MEM_NAME).as_ptr());
+                if h_write == 0 || h_write == INVALID_HANDLE_VALUE {
+                    println!(
+                        "[iRacing Teleport] zero_on_exit: could not open map for writing (attempt {attempt}/3)"
+                    );
+                    if attempt < 3 {
+                        std::thread::sleep(std::time::Duration::from_secs(5));
+                    }
+                    continue 'retry;
+                }
+                let view = MapViewOfFile(h_write, FILE_MAP_WRITE, 0, 0, 0);
+                if view.Value.is_null() {
+                    CloseHandle(h_write);
+                    println!(
+                        "[iRacing Teleport] zero_on_exit: could not map view for writing (attempt {attempt}/3)"
+                    );
+                    if attempt < 3 {
+                        std::thread::sleep(std::time::Duration::from_secs(5));
+                    }
+                    continue 'retry;
+                }
+                std::ptr::write_bytes(view.Value as *mut u8, 0, self.size);
+                UnmapViewOfFile(view);
+                std::thread::sleep(std::time::Duration::from_millis(500));
                 CloseHandle(h_write);
+                println!("[iRacing Teleport] Shared memory zeroed successfully");
                 return;
             }
-            std::ptr::write_bytes(view.Value as *mut u8, 0, self.size);
-            UnmapViewOfFile(view);
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            CloseHandle(h_write);
         }
     }
 }
