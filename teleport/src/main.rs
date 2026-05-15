@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
-use teleport::{source, target};
 use std::sync::mpsc;
+use teleport::{source, target};
 
 const DEFAULT_MULTICAST: &str = "239.255.0.1";
 const DEFAULT_PORT: u16 = 5000;
@@ -29,6 +29,10 @@ enum Command {
         /// Send directly to one host instead of multicast.
         #[arg(long)]
         unicast: bool,
+
+        /// Skip CPU 0 exclusion (for non-iRacing sims or when using Process Lasso).
+        #[arg(long)]
+        no_cpu_exclude: bool,
     },
 
     /// Receive telemetry and expose it as a local iRacing memory map.
@@ -58,7 +62,12 @@ fn main() {
     .expect("failed to install Ctrl-C handler");
 
     let result = match cli.command {
-        Command::Source { bind, target, unicast } => {
+        Command::Source { bind, target, unicast, no_cpu_exclude } => {
+            if no_cpu_exclude {
+                eprintln!("[cpu] CPU 0 exclusion disabled by --no-cpu-exclude flag");
+            } else {
+                teleport::avoid_cpu0();
+            }
             let mode = if unicast { "unicast" } else { "multicast" };
             println!("source → {target} ({mode})");
             source::run(&bind, &target, unicast, rx)

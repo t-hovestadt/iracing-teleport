@@ -20,10 +20,20 @@ struct Args {
     /// Send directly to one host instead of multicast.
     #[arg(long)]
     unicast: bool,
+
+    /// Skip CPU 0 exclusion (for non-iRacing sims or when using Process Lasso).
+    #[arg(long)]
+    no_cpu_exclude: bool,
 }
 
 fn main() {
     let args = Args::parse();
+
+    if args.no_cpu_exclude {
+        eprintln!("[cpu] CPU 0 exclusion disabled by --no-cpu-exclude flag");
+    } else {
+        teleport::avoid_cpu0();
+    }
 
     let (tx, rx) = mpsc::channel::<()>();
     ctrlc::set_handler(move || {
