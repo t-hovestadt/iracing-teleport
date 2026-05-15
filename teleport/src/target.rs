@@ -4,9 +4,9 @@ use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use crate::protocol::{MAX_DATAGRAM_SIZE, Receiver as ProtoReceiver};
+use crate::protocol::{Receiver as ProtoReceiver, MAX_DATAGRAM_SIZE};
 use crate::stats::Stats;
-use crate::telemetry::{MAX_TELEMETRY_SIZE, Telemetry, TelemetryProvider};
+use crate::telemetry::{Telemetry, TelemetryProvider, MAX_TELEMETRY_SIZE};
 
 const STALE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -14,6 +14,7 @@ pub fn run(
     bind: &str,
     unicast: bool,
     multicast_group: &str,
+    busy_wait: bool,
     shutdown: mpsc::Receiver<()>,
 ) -> std::io::Result<()> {
     // Build the socket manually so we can set the receive buffer before binding.
@@ -23,11 +24,16 @@ pub fn run(
     let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     sock.set_recv_buffer_size(2 * 1024 * 1024)?;
     sock.set_reuse_address(true)?;
-    let bind_addr: SocketAddr = bind.parse()
+    let bind_addr: SocketAddr = bind
+        .parse()
         .map_err(|e| std::io::Error::other(format!("invalid bind address: {e}")))?;
     sock.bind(&bind_addr.into())?;
     let socket: UdpSocket = sock.into();
-    socket.set_read_timeout(Some(Duration::from_secs(1)))?;
+    if busy_wait {
+        socket.set_nonblocking(true)?;
+    } else {
+        socket.set_read_timeout(Some(Duration::from_secs(1)))?;
+    }
     println!("Listening on {bind}");
 
     if !unicast {
@@ -88,7 +94,11 @@ pub fn run(
                     // Compute end-to-end latency: source processing + network transit.
                     if let Some(start) = seq_start.take() {
                         let transit_us = start.elapsed().as_micros() as u64;
-                        stats.record(compressed.len(), proto.last_fragment_count, proto.last_source_us + transit_us);
+                        stats.record(
+                            compressed.len(),
+                            proto.last_fragment_count,
+                            proto.last_source_us + transit_us,
+                        );
                     }
 
                     last_update = Instant::now();
@@ -100,9 +110,15 @@ pub fn run(
                 if e.kind() == std::io::ErrorKind::WouldBlock
                     || e.kind() == std::io::ErrorKind::TimedOut =>
             {
+                if busy_wait {
+                    std::hint::spin_loop();
+                }
                 // Drop the telemetry map when we haven't heard from the source for a while.
                 if telemetry.is_some() && last_update.elapsed() >= STALE_TIMEOUT {
-                    println!("No data for {}s — closing telemetry map.", STALE_TIMEOUT.as_secs());
+                    println!(
+                        "No data for {}s — closing telemetry map.",
+                        STALE_TIMEOUT.as_secs()
+                    );
                     telemetry = None;
                 }
             }

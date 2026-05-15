@@ -37,6 +37,12 @@ pub struct Sender {
     buf: Vec<u8>,
 }
 
+impl Default for Sender {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Sender {
     pub fn new() -> Self {
         Self {
@@ -54,7 +60,10 @@ impl Sender {
         let total = data.len();
         let n_fragments = total.div_ceil(MAX_PAYLOAD_PER_DATAGRAM);
         if n_fragments > u16::MAX as usize {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "payload too large"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "payload too large",
+            ));
         }
 
         for i in 0..n_fragments {

@@ -36,6 +36,9 @@ source.exe --unicast --target 192.168.1.50:5000
 - **Zero-copy decompression** — decompresses directly into shared memory, skipping the intermediate buffer
 - **LTO + single codegen unit** — maximum cross-crate inlining
 
+### Low-latency options
+- **Busy-wait recv** — `target.exe --busy-wait` spins on recv instead of sleeping, minimising OS scheduler jitter at the cost of one CPU core
+
 ### Reliability
 - **Proper reconnect** — waits indefinitely for iRacing to start (original exited after 5 seconds)
 - **No undefined behavior** — safe unaligned reads replace packed struct references

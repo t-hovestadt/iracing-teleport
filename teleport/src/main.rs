@@ -48,6 +48,10 @@ enum Command {
         /// Expect a direct unicast stream instead of multicast.
         #[arg(long)]
         unicast: bool,
+
+        /// Spin on recv instead of sleeping (lower jitter, costs one CPU core).
+        #[arg(long)]
+        busy_wait: bool,
     },
 }
 
@@ -62,7 +66,12 @@ fn main() {
     .expect("failed to install Ctrl-C handler");
 
     let result = match cli.command {
-        Command::Source { bind, target, unicast, no_cpu_exclude } => {
+        Command::Source {
+            bind,
+            target,
+            unicast,
+            no_cpu_exclude,
+        } => {
             if no_cpu_exclude {
                 eprintln!("[cpu] CPU 0 exclusion disabled by --no-cpu-exclude flag");
             } else {
@@ -72,11 +81,16 @@ fn main() {
             println!("source → {target} ({mode})");
             source::run(&bind, &target, unicast, rx)
         }
-        Command::Target { bind, group, unicast } => {
+        Command::Target {
+            bind,
+            group,
+            unicast,
+            busy_wait,
+        } => {
             let dest = if unicast { "unicast" } else { group.as_str() };
             let mode = if unicast { "unicast" } else { "multicast" };
             println!("target ← {dest} ({mode})");
-            target::run(&bind, unicast, &group, rx)
+            target::run(&bind, unicast, &group, busy_wait, rx)
         }
     };
 

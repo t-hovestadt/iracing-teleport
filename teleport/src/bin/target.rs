@@ -20,6 +20,10 @@ struct Args {
     /// Expect a direct unicast stream instead of multicast.
     #[arg(long)]
     unicast: bool,
+
+    /// Spin on recv instead of sleeping (lower jitter, costs one CPU core).
+    #[arg(long)]
+    busy_wait: bool,
 }
 
 fn main() {
@@ -32,11 +36,15 @@ fn main() {
     })
     .expect("failed to install Ctrl-C handler");
 
-    let dest = if args.unicast { "unicast" } else { args.group.as_str() };
+    let dest = if args.unicast {
+        "unicast"
+    } else {
+        args.group.as_str()
+    };
     let mode = if args.unicast { "unicast" } else { "multicast" };
     println!("target ← {dest} ({mode})");
 
-    if let Err(e) = target::run(&args.bind, args.unicast, &args.group, rx) {
+    if let Err(e) = target::run(&args.bind, args.unicast, &args.group, args.busy_wait, rx) {
         eprintln!("error: {e}");
         std::process::exit(1);
     }

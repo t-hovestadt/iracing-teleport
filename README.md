@@ -83,6 +83,7 @@ Options:
   --bind <ADDR>     Address and port to listen on     [default: 0.0.0.0:5000]
   --group <ADDR>    Multicast group to join           [default: 239.255.0.1]
   --unicast         Expect a direct unicast stream instead of multicast
+  --busy-wait       Spin on recv instead of sleeping (lower jitter, costs one CPU core)
   --help            Print help
   --version         Print version
 ```

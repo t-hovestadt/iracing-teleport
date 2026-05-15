@@ -22,10 +22,8 @@ pub fn avoid_cpu0() {
         let mut system_mask: usize = 0;
         if GetProcessAffinityMask(process, &mut process_mask, &mut system_mask) != 0 {
             let new_mask = process_mask & !1usize;
-            if new_mask != 0 {
-                if SetProcessAffinityMask(process, new_mask) != 0 {
-                    eprintln!("[cpu] excluded CPU 0 (iRacing sim thread protection)");
-                }
+            if new_mask != 0 && SetProcessAffinityMask(process, new_mask) != 0 {
+                eprintln!("[cpu] excluded CPU 0 (iRacing sim thread protection)");
             }
         }
     }
