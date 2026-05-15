@@ -4,8 +4,8 @@ use windows_sys::Win32::{
     Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0},
     Security::SECURITY_ATTRIBUTES,
     System::Memory::{
-        CreateFileMappingW, MapViewOfFile, MEMORY_MAPPED_VIEW_ADDRESS, OpenFileMappingW,
-        UnmapViewOfFile, FILE_MAP_ALL_ACCESS, FILE_MAP_READ, PAGE_READWRITE,
+        CreateFileMappingW, MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, FILE_MAP_ALL_ACCESS,
+        FILE_MAP_READ, MEMORY_MAPPED_VIEW_ADDRESS, PAGE_READWRITE,
     },
     System::Threading::{CreateEventW, OpenEventW, SetEvent, WaitForSingleObject},
 };
@@ -68,10 +68,15 @@ impl TelemetryProvider for WindowsTelemetry {
                 return Err(TelemetryError::Unavailable);
             }
 
-            let size = query_region_size(view.Value as *const u8)
-                .unwrap_or(super::MAX_TELEMETRY_SIZE);
+            let size =
+                query_region_size(view.Value as *const u8).unwrap_or(super::MAX_TELEMETRY_SIZE);
 
-            Ok(Self { h_map, h_event, view, size })
+            Ok(Self {
+                h_map,
+                h_event,
+                view,
+                size,
+            })
         }
     }
 
@@ -108,7 +113,12 @@ impl TelemetryProvider for WindowsTelemetry {
                 return Err(TelemetryError::Other("CreateEventW failed".into()));
             }
 
-            Ok(Self { h_map, h_event, view, size })
+            Ok(Self {
+                h_map,
+                h_event,
+                view,
+                size,
+            })
         }
     }
 
@@ -148,6 +158,10 @@ fn query_region_size(ptr: *const u8) -> Option<usize> {
             &mut mbi,
             std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
         );
-        if ret == 0 { None } else { Some(mbi.RegionSize) }
+        if ret == 0 {
+            None
+        } else {
+            Some(mbi.RegionSize)
+        }
     }
 }

@@ -72,6 +72,14 @@ Options:
                                                       [default: 239.255.0.1:5000]
   --unicast           Send directly to one host instead of multicast
   --no-cpu-exclude    Skip CPU 0 exclusion (for non-iRacing sims or Process Lasso)
+  --busy-wait         Spin on the iRacing event instead of sleeping (lower jitter,
+                      costs one CPU core)
+  --high-priority     Set HIGH_PRIORITY_CLASS on this process
+  --pin-core <CORE>   Pin to a specific CPU core (0-based)
+  --fanalab           Spawn a dummy iRacingSim64DX11.exe so FanaLab / fanatec-tuner
+                      detect iRacing (useful if source PC is also running fanatec-tuner)
+  --zero-on-exit      Zero the local memory map on shutdown (no-op on source — the
+                      map lives on the target machine)
   --help              Print help
   --version           Print version
 ```
@@ -80,12 +88,19 @@ Options:
 
 ```
 Options:
-  --bind <ADDR>     Address and port to listen on     [default: 0.0.0.0:5000]
-  --group <ADDR>    Multicast group to join           [default: 239.255.0.1]
-  --unicast         Expect a direct unicast stream instead of multicast
-  --busy-wait       Spin on recv instead of sleeping (lower jitter, costs one CPU core)
-  --help            Print help
-  --version         Print version
+  --bind <ADDR>       Address and port to listen on   [default: 0.0.0.0:5000]
+  --group <ADDR>      Multicast group to join         [default: 239.255.0.1]
+  --unicast           Expect a direct unicast stream instead of multicast
+  --no-cpu-exclude    Skip CPU 0 exclusion
+  --busy-wait         Spin on recv instead of sleeping (lower jitter, costs one CPU core)
+  --high-priority     Set HIGH_PRIORITY_CLASS on this process
+  --pin-core <CORE>   Pin to a specific CPU core (0-based)
+  --fanalab           Spawn a dummy iRacingSim64DX11.exe so FanaLab / fanatec-tuner
+                      detect iRacing on the SimHub PC
+  --zero-on-exit      Zero the shared-memory map before dropping it on shutdown
+                      (SimHub / dashboards see 0 RPM instead of stale data)
+  --help              Print help
+  --version           Print version
 ```
 
 ---
@@ -173,7 +188,14 @@ This project started as a from-scratch reimplementation of [iracing-teleport](ht
 - **Actual region size via `VirtualQuery`** — instead of a hardcoded constant.
 - **`Drop` guards** — null and `INVALID_HANDLE_VALUE` checks before each handle close.
 - **End-to-end latency stats** — combines source processing time (carried in the header) with network transit time measured at the target.
-- **CPU 0 exclusion** — iRacing's sim thread is hardcoded to CPU 0; source automatically avoids CPU 0 via `SetProcessAffinityMask` to prevent Type B frame time spikes. Disable with `--no-cpu-exclude` if not running alongside iRacing.
+- **CPU 0 exclusion** — iRacing's sim thread is hardcoded to CPU 0; both source and target automatically avoid CPU 0 via `SetProcessAffinityMask` to prevent Type B frame time spikes. Disable with `--no-cpu-exclude`.
+- **`--busy-wait`** on both source and target — spin instead of sleeping for the lowest possible scheduler jitter, at the cost of one CPU core each.
+- **`--high-priority`** — set `HIGH_PRIORITY_CLASS` so the OS scheduler prefers the telemetry thread.
+- **`--pin-core <N>`** — pin the process to a single CPU core for cache-friendly execution.
+- **`--fanalab`** — spawn a dummy `iRacingSim64DX11.exe` stub so FanaLab / fanatec-tuner detect iRacing on the SimHub PC without needing the real game installed.
+- **`--zero-on-exit`** (target) — zero the shared-memory map on Ctrl-C so SimHub dashboards immediately show 0 RPM / stopped state instead of stale data.
+- **Fanatec LED cleanup** — when stopping iRacing, any Fanatec wheel LEDs lit by fanatec-tuner will clear automatically on the next fanatec-tuner stale timeout (10 s). For instant clearing, stop fanatec-tuner before stopping iracing-teleport.
+- **SourceConfig / TargetConfig API** — standalone binaries now use the same `run_source()` / `run_target()` library functions that sim-bridge uses, so both code paths are identical.
 
 ---
 

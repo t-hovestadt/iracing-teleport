@@ -30,14 +30,20 @@ source.exe --unicast --target 192.168.1.50:5000
 ## What's included
 
 ### Performance
-- **CPU 0 exclusion** — source.exe automatically avoids CPU 0 to prevent competing with iRacing's sim thread, eliminating Type B stutters (15–27 ms frame time spikes). Disable with `--no-cpu-exclude` if not running alongside iRacing.
+- **CPU 0 exclusion** — both source and target automatically avoid CPU 0 to prevent competing with iRacing's sim thread, eliminating Type B stutters (15–27 ms frame time spikes). Disable with `--no-cpu-exclude`.
 - **2 MB socket buffers** — OS defaults drop frames; buffers are large enough for the entire 1.1 MB telemetry frame
 - **Zero-allocation hot path** — no heap allocations during the send/receive loop
 - **Zero-copy decompression** — decompresses directly into shared memory, skipping the intermediate buffer
 - **LTO + single codegen unit** — maximum cross-crate inlining
 
-### Low-latency options
-- **Busy-wait recv** — `target.exe --busy-wait` spins on recv instead of sleeping, minimising OS scheduler jitter at the cost of one CPU core
+### Low-latency options (identical on both source and target)
+- **`--busy-wait`** — spin instead of sleeping, minimising OS scheduler jitter at the cost of one CPU core. On source: spins on the iRacing data-ready event. On target: spins on recv.
+- **`--high-priority`** — set `HIGH_PRIORITY_CLASS` so the OS scheduler prefers the telemetry thread
+- **`--pin-core <N>`** — pin to a specific CPU core for cache-friendly execution
+
+### FanaLab / fanatec-tuner support
+- **`--fanalab`** (target recommended) — spawns a dummy `iRacingSim64DX11.exe` process so FanaLab and fanatec-tuner detect iRacing on the SimHub PC. Automatically killed on Ctrl-C.
+- **`--zero-on-exit`** (target) — zeros the shared-memory map on shutdown so SimHub dashboards immediately show 0 RPM / stopped state instead of stale data. When using fanatec-tuner, wheel LEDs clear on its own stale timeout (≤10 s after iracing-teleport stops).
 
 ### Reliability
 - **Proper reconnect** — waits indefinitely for iRacing to start (original exited after 5 seconds)

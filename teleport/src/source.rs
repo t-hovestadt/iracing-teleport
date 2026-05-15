@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use crate::protocol::Sender;
 use crate::stats::Stats;
-use crate::telemetry::{MAX_TELEMETRY_SIZE, Telemetry, TelemetryError, TelemetryProvider};
+use crate::telemetry::{Telemetry, TelemetryError, TelemetryProvider, MAX_TELEMETRY_SIZE};
 
 const RECONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL_INTERVAL_MS: u32 = 200;
@@ -15,6 +15,7 @@ pub fn run(
     bind: &str,
     target: &str,
     unicast: bool,
+    busy_wait: bool,
     shutdown: mpsc::Receiver<()>,
 ) -> std::io::Result<()> {
     // Build the socket manually so we can set the send buffer before binding.
@@ -23,7 +24,8 @@ pub fn run(
     // latency. 2MB holds ~9 full frames with no backpressure.
     let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     sock.set_send_buffer_size(2 * 1024 * 1024)?;
-    let bind_addr: SocketAddr = bind.parse()
+    let bind_addr: SocketAddr = bind
+        .parse()
         .map_err(|e| std::io::Error::other(format!("invalid bind address: {e}")))?;
     sock.bind(&bind_addr.into())?;
     let socket: UdpSocket = sock.into();
@@ -53,7 +55,7 @@ pub fn run(
             return Ok(());
         }
 
-        if !telemetry.wait_for_data(POLL_INTERVAL_MS) {
+        if !telemetry.wait_for_data(if busy_wait { 0 } else { POLL_INTERVAL_MS }) {
             if last_data.elapsed() >= RECONNECT_TIMEOUT {
                 println!("iRacing stopped responding — waiting to reconnect...");
                 drop(telemetry);
@@ -84,7 +86,9 @@ pub fn run(
         let result = if unicast {
             sender.send(payload, source_us, |d| socket.send(d).map(|_| ()))
         } else {
-            sender.send(payload, source_us, |d| socket.send_to(d, target_addr).map(|_| ()))
+            sender.send(payload, source_us, |d| {
+                socket.send_to(d, target_addr).map(|_| ())
+            })
         };
 
         match result {
@@ -123,4 +127,3 @@ fn try_open(shutdown: &mpsc::Receiver<()>) -> std::io::Result<OpenResult> {
         Err(mpsc::RecvTimeoutError::Timeout) => Ok(OpenResult::Retry),
     }
 }
-

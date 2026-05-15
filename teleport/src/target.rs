@@ -15,6 +15,7 @@ pub fn run(
     unicast: bool,
     multicast_group: &str,
     busy_wait: bool,
+    zero_on_exit: bool,
     shutdown: mpsc::Receiver<()>,
 ) -> std::io::Result<()> {
     // Build the socket manually so we can set the receive buffer before binding.
@@ -53,6 +54,12 @@ pub fn run(
 
     loop {
         if shutdown.try_recv().is_ok() {
+            if zero_on_exit {
+                if let Some(ref mut t) = telemetry {
+                    t.as_slice_mut().fill(0);
+                    let _ = t.signal_data_ready();
+                }
+            }
             return Ok(());
         }
 
