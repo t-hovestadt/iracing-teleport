@@ -67,12 +67,13 @@ source.exe --unicast --target 192.168.1.50:5000
 
 ```
 Options:
-  --bind <ADDR>     Local address to bind to          [default: 0.0.0.0:0]
-  --target <ADDR>   Destination (multicast group:port or unicast IP:port)
+  --bind <ADDR>       Local address to bind to        [default: 0.0.0.0:0]
+  --target <ADDR>     Destination (multicast group:port or unicast IP:port)
                                                       [default: 239.255.0.1:5000]
-  --unicast         Send directly to one host instead of multicast
-  --help            Print help
-  --version         Print version
+  --unicast           Send directly to one host instead of multicast
+  --no-cpu-exclude    Skip CPU 0 exclusion (for non-iRacing sims or Process Lasso)
+  --help              Print help
+  --version           Print version
 ```
 
 ### target.exe
@@ -171,6 +172,7 @@ This project started as a from-scratch reimplementation of [iracing-teleport](ht
 - **Actual region size via `VirtualQuery`** — instead of a hardcoded constant.
 - **`Drop` guards** — null and `INVALID_HANDLE_VALUE` checks before each handle close.
 - **End-to-end latency stats** — combines source processing time (carried in the header) with network transit time measured at the target.
+- **CPU 0 exclusion** — iRacing's sim thread is hardcoded to CPU 0; source automatically avoids CPU 0 via `SetProcessAffinityMask` to prevent Type B frame time spikes. Disable with `--no-cpu-exclude` if not running alongside iRacing.
 
 ---
 
