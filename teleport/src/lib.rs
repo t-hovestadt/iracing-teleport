@@ -67,6 +67,13 @@ pub struct TargetConfig {
     pub fanalab: bool,
     /// Zero the shared-memory map before dropping it on shutdown.
     pub zero_on_exit: bool,
+    /// Called once when the shared-memory map is first created (iRacing data
+    /// arrives) and again each time data resumes after a stale timeout.
+    /// Pass `None` if not needed.
+    pub on_first_data: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    /// Called when no data arrives for the stale timeout and the map is zeroed.
+    /// Pass `None` if not needed.
+    pub on_stale: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Default for TargetConfig {
@@ -80,6 +87,8 @@ impl Default for TargetConfig {
             high_priority: false,
             fanalab: false,
             zero_on_exit: false,
+            on_first_data: None,
+            on_stale: None,
         }
     }
 }
@@ -125,6 +134,8 @@ pub fn run_target(config: TargetConfig, shutdown: mpsc::Receiver<()>) -> io::Res
         &config.multicast_group,
         config.busy_wait,
         config.zero_on_exit,
+        config.on_first_data,
+        config.on_stale,
         shutdown,
     )
 }

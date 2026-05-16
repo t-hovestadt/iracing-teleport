@@ -20,6 +20,8 @@ pub fn run(
     multicast_group: &str,
     busy_wait: bool,
     zero_on_exit: bool,
+    on_first_data: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    on_stale: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
     shutdown: mpsc::Receiver<()>,
 ) -> std::io::Result<()> {
     // Build the socket manually so we can set the receive buffer before binding.
@@ -56,6 +58,9 @@ pub fn run(
     // Fix 3: track whether we've already zeroed the map during the current
     // stale window so we don't repeatedly fill(0) every poll tick.
     let mut zeroed_at: Option<Instant> = None;
+    // Tracks whether on_first_data has been fired for the current active
+    // window. Reset when on_stale fires so on_first_data re-fires on resume.
+    let mut data_announced = false;
     let mut stats = Stats::new("target");
     let mut seq_start: Option<Instant> = None;
 
@@ -85,6 +90,7 @@ pub fn run(
                             Ok(t) => {
                                 println!("Created local telemetry memory map.");
                                 telemetry = Some(t);
+                                data_announced = false; // will fire below
                             }
                             Err(e) => {
                                 return Err(std::io::Error::other(format!(
@@ -117,6 +123,12 @@ pub fn run(
 
                     last_update = Instant::now();
                     zeroed_at = None; // Fix 3: reset zeroed flag on live data
+                    if !data_announced {
+                        data_announced = true;
+                        if let Some(ref cb) = on_first_data {
+                            cb();
+                        }
+                    }
                     stats.maybe_print();
                 }
             }
@@ -146,6 +158,10 @@ pub fn run(
                         t.as_slice_mut().fill(0);
                         let _ = t.signal_data_ready();
                         zeroed_at = Some(Instant::now());
+                        data_announced = false;
+                        if let Some(ref cb) = on_stale {
+                            cb();
+                        }
                     }
                 }
                 if close_map {
