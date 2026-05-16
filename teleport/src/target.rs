@@ -14,6 +14,7 @@ const STALE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Close and release the map entirely after this much silence (Fix 3).
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(60);
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     bind: &str,
     unicast: bool,
