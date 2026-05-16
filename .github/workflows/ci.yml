@@ -27,11 +27,8 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Build root crate
+      - name: Build
         run: cargo build --release
-
-      - name: Build teleport crate
-        run: cd teleport && cargo build --release
 
       - name: Run tests
         run: cargo test --release
@@ -41,10 +38,9 @@ jobs:
         with:
           name: iracing-teleport
           path: |
-            target/release/iracing-teleport.exe
-            teleport/target/release/source.exe
-            teleport/target/release/target.exe
-            teleport/target/release/teleport.exe
+            target/release/source.exe
+            target/release/target.exe
+            target/release/teleport.exe
           retention-days: 7
 
   release:
@@ -58,18 +54,14 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Build root crate
+      - name: Build
         run: cargo build --release
-
-      - name: Build teleport crate
-        run: cd teleport && cargo build --release
 
       - name: Create release and upload exes
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            target/release/iracing-teleport.exe
-            teleport/target/release/source.exe
-            teleport/target/release/target.exe
-            teleport/target/release/teleport.exe
+            target/release/source.exe
+            target/release/target.exe
+            target/release/teleport.exe
           generate_release_notes: true
