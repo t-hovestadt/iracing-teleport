@@ -19,8 +19,6 @@ bundles iRacing Teleport with AC Teleport and Sim Relay. One binary,
 automatic game detection, no manual switching.
 
 **Companion projects:**
-- [ac-teleport](https://github.com/t-hovestadt/ac-teleport) — Assetto Corsa / ACE (shared memory) — archived; absorbed into sim-teleport as a workspace crate
-- [sim-relay](https://github.com/t-hovestadt/sim-relay) — games that broadcast UDP natively — archived; absorbed into sim-teleport as a workspace crate
 - [sim-teleport](https://github.com/t-hovestadt/sim-teleport) — unified binary containing iRacing Teleport, AC Teleport, and Sim Relay; automatic game detection, no manual switching
 
 ---
@@ -34,16 +32,6 @@ Pre-built Windows x64 binaries are on the [Releases](../../releases/latest) page
 | `source.exe` | iRacing PC |
 | `target.exe` | SimHub PC |
 | `teleport.exe` | Either — combined CLI (`teleport source` / `teleport target`) |
-
----
-
-## Windows SmartScreen
-
-On first run, Windows may show "Windows protected your PC." This is normal for unsigned open-source software.
-
-To unblock: right-click the `.exe` → **Properties** → check **Unblock** at the bottom of the General tab → **OK**.
-
-Or click **More info** on the SmartScreen dialog, then **Run anyway**.
 
 ---
 
