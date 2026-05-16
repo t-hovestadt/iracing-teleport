@@ -171,6 +171,7 @@ fn main() {
                     high_priority,
                     fanalab,
                     zero_on_exit,
+                    ..Default::default()
                 },
                 rx,
             )

@@ -87,6 +87,7 @@ fn main() {
             high_priority: args.high_priority,
             fanalab: args.fanalab,
             zero_on_exit: args.zero_on_exit,
+            ..Default::default()
         },
         rx,
     );
