@@ -44,6 +44,16 @@ pub trait TelemetryProvider: Sized {
 
     /// Size of the mapped region in bytes.
     fn size(&self) -> usize;
+
+    /// Read iRacing's frame tick counter from shared memory.
+    ///
+    /// The counter lives at `irsdk_header.varBuf[0].tickCount` (byte offset 48)
+    /// and increments every iRacing frame regardless of whether the
+    /// `IRSDKDataValidEvent` is signaled. Use this as a fallback to detect
+    /// new frames when the event handle is stuck.
+    ///
+    /// Returns 0 on non-Windows or when memory is unavailable.
+    fn read_tick_counter(&self) -> i32;
 }
 
 // ── Platform dispatch ─────────────────────────────────────────────────────────

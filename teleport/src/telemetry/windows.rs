@@ -147,6 +147,15 @@ impl TelemetryProvider for WindowsTelemetry {
     fn size(&self) -> usize {
         self.size
     }
+
+    fn read_tick_counter(&self) -> i32 {
+        // irsdk_header layout (all i32 fields):
+        //   ver(4) + status(4) + tickRate(4) + sessionInfoUpdate(4) +
+        //   sessionInfoLen(4) + sessionInfoOffset(4) + numVars(4) +
+        //   varHeaderOffset(4) + numBuf(4) + bufLen(4) + pad1[2](8)
+        //   = 48 bytes → varBuf[0].tickCount
+        unsafe { std::ptr::read_volatile((self.view.Value as *const i32).add(12)) }
+    }
 }
 
 fn query_region_size(ptr: *const u8) -> Option<usize> {

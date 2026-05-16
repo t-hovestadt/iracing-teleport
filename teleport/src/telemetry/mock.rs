@@ -35,4 +35,8 @@ impl TelemetryProvider for MockTelemetry {
     fn size(&self) -> usize {
         self.data.len()
     }
+
+    fn read_tick_counter(&self) -> i32 {
+        0
+    }
 }

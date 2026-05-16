@@ -8,7 +8,11 @@ use crate::protocol::{Receiver as ProtoReceiver, MAX_DATAGRAM_SIZE};
 use crate::stats::Stats;
 use crate::telemetry::{Telemetry, TelemetryProvider, MAX_TELEMETRY_SIZE};
 
-const STALE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Zero the shared-memory map after this much silence so SimHub dashboards
+/// immediately show stopped state (Fix 3).
+const STALE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Close and release the map entirely after this much silence (Fix 3).
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub fn run(
     bind: &str,
@@ -49,6 +53,9 @@ pub fn run(
     let mut proto = ProtoReceiver::new(get_maximum_output_size(MAX_TELEMETRY_SIZE));
     let mut telemetry: Option<Telemetry> = None;
     let mut last_update = Instant::now();
+    // Fix 3: track whether we've already zeroed the map during the current
+    // stale window so we don't repeatedly fill(0) every poll tick.
+    let mut zeroed_at: Option<Instant> = None;
     let mut stats = Stats::new("target");
     let mut seq_start: Option<Instant> = None;
 
@@ -109,6 +116,7 @@ pub fn run(
                     }
 
                     last_update = Instant::now();
+                    zeroed_at = None; // Fix 3: reset zeroed flag on live data
                     stats.maybe_print();
                 }
             }
@@ -120,13 +128,33 @@ pub fn run(
                 if busy_wait {
                     std::hint::spin_loop();
                 }
-                // Drop the telemetry map when we haven't heard from the source for a while.
-                if telemetry.is_some() && last_update.elapsed() >= STALE_TIMEOUT {
+                // Fix 3: Two-stage stale handling.
+                //  • 30 s — zero the map so SimHub dashboards show stopped state,
+                //            but keep the handle open for fast resume.
+                //  • 60 s — close and release the map entirely.
+                let mut close_map = false;
+                if let Some(ref mut t) = telemetry {
+                    let stale = last_update.elapsed();
+                    if stale >= CLOSE_TIMEOUT {
+                        close_map = true;
+                    } else if stale >= STALE_TIMEOUT && zeroed_at.is_none() {
+                        println!(
+                            "No data for {}s — zeroing telemetry map (closes at {}s).",
+                            STALE_TIMEOUT.as_secs(),
+                            CLOSE_TIMEOUT.as_secs()
+                        );
+                        t.as_slice_mut().fill(0);
+                        let _ = t.signal_data_ready();
+                        zeroed_at = Some(Instant::now());
+                    }
+                }
+                if close_map {
                     println!(
                         "No data for {}s — closing telemetry map.",
-                        STALE_TIMEOUT.as_secs()
+                        CLOSE_TIMEOUT.as_secs()
                     );
                     telemetry = None;
+                    zeroed_at = None;
                 }
             }
 
