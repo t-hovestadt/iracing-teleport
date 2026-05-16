@@ -1,10 +1,11 @@
-name: CI
+name: CI/CD
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [main]
+    tags: ['v*']
   pull_request:
-    branches: [ "main" ]
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -12,39 +13,63 @@ env:
 jobs:
   check:
     name: Build and Lint
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-gnu
           components: clippy, rustfmt
-
-      - name: Install MinGW
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-mingw-w64-x86-64
 
       - name: Check formatting
         run: cargo fmt --all -- --check
 
       - name: Run clippy
-        run: cargo clippy --target x86_64-pc-windows-gnu --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Run build
-        run: cargo build --target x86_64-pc-windows-gnu --release
+      - name: Build root crate
+        run: cargo build --release
+
+      - name: Build teleport crate
+        run: cd teleport && cargo build --release
 
       - name: Run tests
         run: cargo test --release
 
-      - name: Upload build artifact
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: iracing-teleport
           path: |
-            target/x86_64-pc-windows-gnu/release/source.exe
-            target/x86_64-pc-windows-gnu/release/target.exe
-            target/x86_64-pc-windows-gnu/release/teleport.exe
+            target/release/iracing-teleport.exe
+            teleport/target/release/source.exe
+            teleport/target/release/target.exe
+            teleport/target/release/teleport.exe
           retention-days: 7
+
+  release:
+    name: Publish Release
+    runs-on: windows-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build root crate
+        run: cargo build --release
+
+      - name: Build teleport crate
+        run: cd teleport && cargo build --release
+
+      - name: Create release and upload exes
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/release/iracing-teleport.exe
+            teleport/target/release/source.exe
+            teleport/target/release/target.exe
+            teleport/target/release/teleport.exe
+          generate_release_notes: true
