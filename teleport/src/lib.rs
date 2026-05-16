@@ -5,6 +5,10 @@ pub mod stats;
 pub mod target;
 pub mod telemetry;
 
+/// Callback type for per-window transfer stats.
+/// Arguments: `(total_messages, total_bytes, avg_latency_us)` since the run started.
+pub type StatsCb = Arc<dyn Fn(u64, u64, u64) + Send + Sync>;
+
 /// Default multicast group used by source and target when no address is specified.
 pub const DEFAULT_MULTICAST: &str = "239.255.0.1";
 /// Default UDP port for both sending and receiving.
@@ -24,6 +28,10 @@ pub struct SourceConfig {
     pub datagram_size: usize,
     pub no_delta: bool,
     pub keyframe_interval: u16,
+    /// Called every ~5 s when the stats window fires.
+    /// Arguments: `(total_messages, total_bytes, avg_latency_us)` since `run_source()` was called.
+    /// Pass `None` if not needed.
+    pub on_stats: Option<StatsCb>,
 }
 
 impl Default for SourceConfig {
@@ -39,6 +47,7 @@ impl Default for SourceConfig {
             datagram_size: source::DEFAULT_DATAGRAM_SIZE,
             no_delta: false,
             keyframe_interval: source::DEFAULT_KEYFRAME_INTERVAL,
+            on_stats: None,
         }
     }
 }
@@ -56,6 +65,10 @@ pub struct TargetConfig {
     pub on_first_data: Option<Arc<dyn Fn() + Send + Sync>>,
     /// Called when the stale timeout fires and the telemetry map is dropped. None = no-op.
     pub on_stale: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Called every ~5 s when the stats window fires.
+    /// Arguments: `(total_messages, total_bytes, avg_latency_us)` since `run_target()` was called.
+    /// Pass `None` if not needed.
+    pub on_stats: Option<StatsCb>,
 }
 
 impl Default for TargetConfig {
@@ -71,6 +84,7 @@ impl Default for TargetConfig {
             high_priority: false,
             on_first_data: None,
             on_stale: None,
+            on_stats: None,
         }
     }
 }
@@ -87,6 +101,7 @@ pub fn run_source(config: SourceConfig, shutdown: mpsc::Receiver<()>) -> io::Res
         config.datagram_size,
         config.no_delta,
         config.keyframe_interval,
+        config.on_stats,
         shutdown,
     )
 }
@@ -104,5 +119,6 @@ pub fn run_target(config: TargetConfig, shutdown: mpsc::Receiver<()>) -> io::Res
         shutdown,
         config.on_first_data,
         config.on_stale,
+        config.on_stats,
     )
 }

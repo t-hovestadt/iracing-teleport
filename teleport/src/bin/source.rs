@@ -85,6 +85,7 @@ fn main() {
         args.datagram_size,
         args.no_delta,
         args.keyframe_interval,
+        None,
         rx,
     ) {
         eprintln!("error: {e}");

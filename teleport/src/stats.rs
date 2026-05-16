@@ -106,10 +106,25 @@ impl Stats {
         self.lifetime_dropped += count;
     }
 
-    pub fn maybe_print(&mut self) {
+    /// Return `(lifetime_updates, lifetime_bytes, avg_latency_us)` since `new()`.
+    /// `avg_latency_us` is the mean of all recorded latency values; returns 0 if
+    /// no frames have been received yet.
+    pub fn lifetime_snapshot(&self) -> (u64, u64, u64) {
+        let avg = if self.lifetime_updates > 0 {
+            (self.lifetime_latency_sum / self.lifetime_updates as u128) as u64
+        } else {
+            0
+        };
+        (self.lifetime_updates, self.lifetime_bytes, avg)
+    }
+
+    /// Print the 5-second window stats line and reset window counters.
+    /// Returns `true` when the window fired (caller can then read `lifetime_snapshot()`
+    /// to drive a stats callback), `false` if the interval hasn't elapsed yet.
+    pub fn maybe_print(&mut self) -> bool {
         let elapsed = self.window_start.elapsed();
         if elapsed < PRINT_INTERVAL {
-            return;
+            return false;
         }
         let elapsed_s = elapsed.as_secs_f64();
         let rate = self.updates as f64 / elapsed_s;
@@ -161,6 +176,7 @@ impl Stats {
         self.full_latencies.clear();
         self.source_latencies.clear();
         self.window_start = Instant::now();
+        true
     }
 
     pub fn print_summary(&self) {

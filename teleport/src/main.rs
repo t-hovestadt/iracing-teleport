@@ -152,6 +152,7 @@ fn main() {
                 datagram_size,
                 no_delta,
                 keyframe_interval,
+                None,
                 rx,
             )
         }
@@ -178,6 +179,7 @@ fn main() {
                 stale_timeout,
                 high_priority,
                 rx,
+                None,
                 None,
                 None,
             )

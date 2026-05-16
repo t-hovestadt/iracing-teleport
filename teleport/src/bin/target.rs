@@ -81,6 +81,7 @@ fn main() {
         rx,
         None,
         None,
+        None,
     ) {
         eprintln!("error: {e}");
         std::process::exit(1);

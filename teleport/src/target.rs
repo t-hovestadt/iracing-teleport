@@ -81,6 +81,7 @@ pub fn run(
     shutdown: mpsc::Receiver<()>,
     on_first_data: Option<Arc<dyn Fn() + Send + Sync>>,
     on_stale: Option<Arc<dyn Fn() + Send + Sync>>,
+    on_stats: Option<crate::StatsCb>,
 ) -> std::io::Result<()> {
     let stale_timeout = Duration::from_secs(stale_timeout_secs);
     let _timer = HighResTimer::acquire();
@@ -333,7 +334,12 @@ pub fn run(
                             }
 
                             last_update = Instant::now();
-                            stats.maybe_print();
+                            if stats.maybe_print() {
+                                if let Some(ref cb) = on_stats {
+                                    let (msgs, bytes, avg_lat) = stats.lifetime_snapshot();
+                                    cb(msgs, bytes, avg_lat);
+                                }
+                            }
                         }
                     }
                 }

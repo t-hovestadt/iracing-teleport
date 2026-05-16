@@ -64,6 +64,7 @@ pub fn run(
     datagram_size: usize,
     no_delta: bool,
     keyframe_interval: u16,
+    on_stats: Option<crate::StatsCb>,
     shutdown: mpsc::Receiver<()>,
 ) -> std::io::Result<()> {
     let reconnect_timeout = Duration::from_secs(reconnect_timeout_secs);
@@ -462,7 +463,12 @@ pub fn run(
             }
         }
 
-        stats.maybe_print();
+        if stats.maybe_print() {
+            if let Some(ref cb) = on_stats {
+                let (msgs, bytes, avg_lat) = stats.lifetime_snapshot();
+                cb(msgs, bytes, avg_lat);
+            }
+        }
     }
 }
 
