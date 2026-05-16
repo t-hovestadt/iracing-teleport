@@ -100,9 +100,7 @@ pub fn run(
                     let result = if unicast {
                         sender.send(payload, 0, |d| socket.send(d).map(|_| ()))
                     } else {
-                        sender.send(payload, 0, |d| {
-                            socket.send_to(d, target_addr).map(|_| ())
-                        })
+                        sender.send(payload, 0, |d| socket.send_to(d, target_addr).map(|_| ()))
                     };
                     if let Err(e) = result {
                         eprintln!("keepalive send failed: {e}");
