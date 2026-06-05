@@ -1,3 +1,4 @@
+pub mod ibt_writer;
 pub mod platform;
 pub mod protocol;
 pub mod source;
@@ -61,6 +62,9 @@ pub struct TargetConfig {
     pub fanalab: bool,
     pub stale_timeout_secs: u64,
     pub high_priority: bool,
+    /// Write iRacing `.ibt` telemetry files to the iRacing telemetry folder so
+    /// disk-based tools (e.g. Garage 61) can read teleported telemetry locally.
+    pub write_ibt: bool,
     /// Called once when the first complete frame is received. None = no-op.
     pub on_first_data: Option<Arc<dyn Fn() + Send + Sync>>,
     /// Called when the stale timeout fires and the telemetry map is dropped. None = no-op.
@@ -82,6 +86,7 @@ impl Default for TargetConfig {
             fanalab: false,
             stale_timeout_secs: target::DEFAULT_STALE_TIMEOUT_SECS,
             high_priority: false,
+            write_ibt: false,
             on_first_data: None,
             on_stale: None,
             on_stats: None,
@@ -116,6 +121,7 @@ pub fn run_target(config: TargetConfig, shutdown: mpsc::Receiver<()>) -> io::Res
         config.fanalab,
         config.stale_timeout_secs,
         config.high_priority,
+        config.write_ibt,
         shutdown,
         config.on_first_data,
         config.on_stale,

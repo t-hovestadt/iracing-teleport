@@ -106,6 +106,11 @@ enum Command {
         /// Safe to use on the SimHub PC.
         #[arg(long)]
         high_priority: bool,
+
+        /// Also write iRacing .ibt telemetry files to Documents\iRacing\telemetry
+        /// so disk-based tools (e.g. Garage 61) can read teleported telemetry here.
+        #[arg(long)]
+        write_ibt: bool,
     },
 }
 
@@ -165,6 +170,7 @@ fn main() {
             fanalab,
             stale_timeout,
             high_priority,
+            write_ibt,
         } => {
             let dest = if unicast { "unicast" } else { group.as_str() };
             let mode = if unicast { "unicast" } else { "multicast" };
@@ -178,6 +184,7 @@ fn main() {
                 fanalab,
                 stale_timeout,
                 high_priority,
+                write_ibt,
                 rx,
                 None,
                 None,

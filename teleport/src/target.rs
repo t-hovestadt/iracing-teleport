@@ -4,12 +4,14 @@ use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
+use crate::ibt_writer::IbtWriter;
 use crate::platform::{
     boost_thread_priority, pin_thread_to_core, set_high_priority, HighResTimer, MmcssGuard,
 };
 use crate::protocol::{xor_delta, Receiver as ProtoReceiver, DELTA_BIT, MAX_DATAGRAM_SIZE};
 use crate::stats::Stats;
 use crate::telemetry::{Telemetry, TelemetryProvider, IRSDK_HEADER_SIZE, MAX_TELEMETRY_SIZE};
+use std::path::PathBuf;
 
 pub const DEFAULT_STALE_TIMEOUT_SECS: u64 = 10;
 // How often target retries a resync request to source when has_full_frame is false.
@@ -68,6 +70,19 @@ impl Drop for FanalabStub {
     }
 }
 
+/// iRacing writes `.ibt` telemetry to `Documents\iRacing\telemetry` on Windows.
+/// Resolve that from the user profile; fall back to `./telemetry` elsewhere
+/// (non-Windows dev builds, where there is no iRacing install).
+fn ibt_telemetry_dir() -> PathBuf {
+    if let Some(profile) = std::env::var_os("USERPROFILE") {
+        return PathBuf::from(profile)
+            .join("Documents")
+            .join("iRacing")
+            .join("telemetry");
+    }
+    PathBuf::from("telemetry")
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     bind: &str,
@@ -78,6 +93,7 @@ pub fn run(
     fanalab: bool,
     stale_timeout_secs: u64,
     high_priority: bool,
+    write_ibt: bool,
     shutdown: mpsc::Receiver<()>,
     on_first_data: Option<Arc<dyn Fn() + Send + Sync>>,
     on_stale: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -149,9 +165,21 @@ pub fn run(
     let mut last_resync_request = Instant::now() - RESYNC_REQUEST_INTERVAL;
     // FanaLab compat: dummy process that makes FanaLab think iRacing is running.
     let mut fanalab_stub: Option<FanalabStub> = None;
+    // Optional .ibt disk-file writer (opt-in via --write-ibt). Lets disk-based
+    // telemetry tools (e.g. Garage 61) read teleported telemetry on the target PC.
+    let mut ibt_writer: Option<IbtWriter> = if write_ibt {
+        let dir = ibt_telemetry_dir();
+        println!("[ibt] writing .ibt telemetry to {}", dir.display());
+        Some(IbtWriter::new(dir))
+    } else {
+        None
+    };
 
     loop {
         if shutdown.try_recv().is_ok() {
+            if let Some(w) = ibt_writer.as_mut() {
+                w.finish();
+            }
             drop(fanalab_stub.take());
             stats.print_summary();
             return Ok(());
@@ -340,6 +368,13 @@ pub fn run(
                                     cb(msgs, bytes, avg_lat);
                                 }
                             }
+
+                            // Append this frame to the .ibt file (opt-in). The writer
+                            // dedups by tickCount, so frames that don't advance the
+                            // tick (e.g. session-info frames) are no-ops.
+                            if let Some(w) = ibt_writer.as_mut() {
+                                w.on_map_update(t.as_slice());
+                            }
                         }
                     }
                 }
@@ -370,6 +405,11 @@ pub fn run(
                         "No data for {}s, closing telemetry map.",
                         stale_timeout.as_secs()
                     );
+                    // Close the current .ibt file so disk-based tools see a complete
+                    // file; a fresh one starts on the next session.
+                    if let Some(w) = ibt_writer.as_mut() {
+                        w.finish();
+                    }
                     // Zero the entire map so SimHub sees a clean disconnect and
                     // FanaLab reads RPM=0 to reset wheel base LEDs.
                     if let Some(t) = telemetry.as_mut() {
