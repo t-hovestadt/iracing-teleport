@@ -1,6 +1,6 @@
 [package]
 name = "teleport"
-version = "1.0.9"
+version = "1.1.0"
 edition = "2021"
 description = "Stream iRacing telemetry to a remote machine over UDP"
 
